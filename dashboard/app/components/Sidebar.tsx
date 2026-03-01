@@ -3,8 +3,8 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import {
-    Newspaper, LayoutDashboard, FileText,
-    Mail, BarChart2, Settings, Zap, RefreshCw
+    LayoutDashboard, FileText, Mail, BarChart2,
+    Settings, Zap, RefreshCw, Sparkles
 } from 'lucide-react';
 import { useState } from 'react';
 import clsx from 'clsx';
@@ -21,10 +21,11 @@ export default function Sidebar() {
     const path = usePathname();
     const [scanning, setScanning] = useState(false);
     const [scanStatus, setScanStatus] = useState<string | null>(null);
+    const [scanOk, setScanOk] = useState(true);
 
     const handleScan = async () => {
         setScanning(true);
-        setScanStatus('Scanning…');
+        setScanStatus(null);
         try {
             const res = await fetch('http://localhost:8000/api/scan', {
                 method: 'POST',
@@ -32,59 +33,66 @@ export default function Sidebar() {
                 body: JSON.stringify({ platforms: ['linkedin', 'indeed', 'naukri', 'instahyre'], max_jobs_per_platform: 20, headless: true }),
             });
             const data = await res.json();
+            setScanOk(true);
             setScanStatus(data.message || 'Scan started');
         } catch {
+            setScanOk(false);
             setScanStatus('API offline');
         }
         setScanning(false);
-        setTimeout(() => setScanStatus(null), 4000);
+        setTimeout(() => setScanStatus(null), 5000);
     };
 
     return (
-        <aside className="w-64 min-h-screen bg-ink text-newsprint flex flex-col border-r-4 border-accent-gold">
-            {/* Masthead */}
-            <div className="p-6 border-b-2 border-accent-gold">
-                <div className="flex items-center gap-2 mb-1">
-                    <Newspaper className="w-6 h-6 text-accent-gold-light" />
-                    <span className="font-serif font-black text-xl tracking-tight text-newsprint">
+        <aside className="w-60 min-h-screen flex flex-col border-r border-border-bright"
+            style={{ background: 'linear-gradient(180deg, #0a0f1e 0%, #080c14 100%)' }}>
+
+            {/* Logo */}
+            <div className="px-5 py-6 border-b border-border">
+                <div className="flex items-center gap-2.5 mb-0.5">
+                    <div className="w-7 h-7 rounded-lg bg-accent flex items-center justify-center shadow-glow-sm flex-shrink-0">
+                        <Sparkles className="w-4 h-4 text-white" />
+                    </div>
+                    <span className="font-display font-bold text-lg text-txt-primary tracking-tight">
                         TempoApply
                     </span>
                 </div>
-                <p className="text-xs text-newsprint/50 font-sans uppercase tracking-widest">
-                    AI Job Agent
-                </p>
-                <div className="mt-3 h-px bg-gradient-to-r from-transparent via-accent-gold to-transparent" />
+                <p className="text-xs text-txt-muted font-sans mt-1 ml-9">AI Job Agent</p>
             </div>
 
             {/* Nav */}
-            <nav className="flex-1 p-4 space-y-1">
-                {NAV_ITEMS.map(({ href, icon: Icon, label }) => (
-                    <Link
-                        key={href}
-                        href={href}
-                        className={clsx(
-                            'flex items-center gap-3 px-3 py-2.5 rounded text-sm font-medium transition-all duration-150',
-                            path === href
-                                ? 'bg-accent-gold text-ink shadow-newspaper font-semibold'
-                                : 'text-newsprint/70 hover:bg-ink-light hover:text-newsprint'
-                        )}
-                    >
-                        <Icon className="w-4 h-4 flex-shrink-0" />
-                        <span className="font-sans">{label}</span>
-                    </Link>
-                ))}
+            <nav className="flex-1 p-3 space-y-0.5 mt-1">
+                {NAV_ITEMS.map(({ href, icon: Icon, label }) => {
+                    const active = path === href;
+                    return (
+                        <Link
+                            key={href}
+                            href={href}
+                            className={clsx(
+                                'flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-150',
+                                active
+                                    ? 'nav-active'
+                                    : 'text-txt-secondary hover:text-txt-primary hover:bg-white/5'
+                            )}
+                        >
+                            <Icon className={clsx('w-4 h-4 flex-shrink-0', active ? 'text-accent-light' : 'text-txt-muted')} />
+                            <span>{label}</span>
+                            {active && <span className="ml-auto w-1 h-4 rounded-full bg-accent-light opacity-70" />}
+                        </Link>
+                    );
+                })}
             </nav>
 
-            {/* Scan Button */}
-            <div className="p-4 border-t border-newsprint/10">
+            {/* Scan CTA */}
+            <div className="p-4 border-t border-border space-y-2">
                 <button
                     onClick={handleScan}
                     disabled={scanning}
                     className={clsx(
-                        'w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded border-2 text-sm font-semibold transition-all duration-200',
+                        'w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-lg text-sm font-semibold transition-all duration-200',
                         scanning
-                            ? 'border-accent-gold/50 text-accent-gold/50 cursor-not-allowed'
-                            : 'border-accent-gold text-accent-gold hover:bg-accent-gold hover:text-ink cursor-pointer'
+                            ? 'bg-accent/20 text-accent-light cursor-not-allowed'
+                            : 'bg-accent hover:bg-accent-2 text-white shadow-glow cursor-pointer'
                     )}
                 >
                     {scanning
@@ -93,13 +101,14 @@ export default function Sidebar() {
                     {scanning ? 'Scanning…' : 'Run Scan'}
                 </button>
                 {scanStatus && (
-                    <p className="mt-2 text-xs text-center text-accent-gold/70 animate-fade-in-up">
+                    <p className={clsx(
+                        'text-xs text-center animate-fade-in',
+                        scanOk ? 'text-emerald' : 'text-danger'
+                    )}>
                         {scanStatus}
                     </p>
                 )}
-                <p className="mt-2 text-xs text-newsprint/30 text-center font-sans">
-                    Scans all platforms
-                </p>
+                <p className="text-xs text-txt-muted text-center">Scans all platforms</p>
             </div>
         </aside>
     );

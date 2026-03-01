@@ -17,12 +17,21 @@ class Settings(BaseSettings):
     # Platform credentials
     linkedin_email: str = ""
     linkedin_password: str = ""
+
+    # Indeed — Google-auth only, no password needed
     indeed_email: str = ""
-    indeed_password: str = ""
+    indeed_password: str = ""          # leave blank if using Google auth
+    indeed_use_google_auth: bool = True
+
+    # Naukri — Google-auth only, no password needed
     naukri_email: str = ""
-    naukri_password: str = ""
+    naukri_password: str = ""          # leave blank if using Google auth
+    naukri_use_google_auth: bool = True
+
+    # InstaHyre — Google-auth only, no password needed
     instahyre_email: str = ""
-    instahyre_password: str = ""
+    instahyre_password: str = ""       # leave blank if using Google auth
+    instahyre_use_google_auth: bool = True
 
     # User profile
     user_full_name: str = "Ashutosh Jha"

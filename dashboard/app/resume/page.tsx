@@ -2,7 +2,8 @@
 
 import Sidebar from '../components/Sidebar';
 import { useState, useEffect } from 'react';
-import { Upload, FileText, CheckCircle } from 'lucide-react';
+import { Upload, FileText, CheckCircle, Info } from 'lucide-react';
+import clsx from 'clsx';
 
 const API = 'http://localhost:8000';
 
@@ -11,6 +12,7 @@ export default function ResumePage() {
     const [uploading, setUploading] = useState(false);
     const [dragOver, setDragOver] = useState(false);
     const [message, setMessage] = useState('');
+    const [msgOk, setMsgOk] = useState(true);
 
     const fetchResume = async () => {
         try {
@@ -24,7 +26,8 @@ export default function ResumePage() {
 
     const handleUpload = async (file: File) => {
         if (!file.name.endsWith('.tex')) {
-            setMessage('⚠️ Only .tex files are supported');
+            setMsgOk(false);
+            setMessage('Only .tex files are supported');
             return;
         }
         setUploading(true);
@@ -33,10 +36,12 @@ export default function ResumePage() {
         try {
             const r = await fetch(`${API}/api/resume/upload`, { method: 'POST', body: form });
             const d = await r.json();
-            setMessage(`✅ Resume uploaded: ${d.filename} (${d.preview_chars} chars parsed)`);
+            setMsgOk(true);
+            setMessage(`Resume uploaded: ${d.filename} (${d.preview_chars} chars parsed)`);
             fetchResume();
         } catch {
-            setMessage('❌ Upload failed. Is the API running?');
+            setMsgOk(false);
+            setMessage('Upload failed. Is the API running?');
         }
         setUploading(false);
     };
@@ -52,43 +57,53 @@ export default function ResumePage() {
         <div className="flex min-h-screen">
             <Sidebar />
             <main className="flex-1 overflow-auto">
-                <header className="bg-newsprint border-b-4 border-double border-ink px-6 py-4 sticky top-0 z-10">
-                    <h1 className="font-serif text-3xl font-black text-ink">Resume Bureau</h1>
-                    <div className="w-full h-px bg-gradient-to-r from-ink via-accent-gold to-ink mt-1 mb-1" />
-                    <p className="text-xs text-ink-muted font-sans">Upload your base .tex resume · AI tailors it per job</p>
+                <header className="glass border-b border-border px-6 py-4 sticky top-0 z-20">
+                    <div className="flex items-center gap-3">
+                        <div className="p-2 rounded-lg bg-accent/10">
+                            <FileText className="w-5 h-5 text-accent-light" />
+                        </div>
+                        <div>
+                            <h1 className="font-display font-bold text-2xl text-txt-primary">Resume</h1>
+                            <p className="text-xs text-txt-muted">Upload your base .tex · AI tailors it per job</p>
+                        </div>
+                    </div>
                 </header>
 
-                <div className="p-6 max-w-3xl mx-auto space-y-6">
+                <div className="p-6 max-w-3xl mx-auto space-y-5">
                     {/* Upload zone */}
                     <div
                         onDrop={handleDrop}
                         onDragOver={e => { e.preventDefault(); setDragOver(true); }}
                         onDragLeave={() => setDragOver(false)}
                         onClick={() => document.getElementById('resumeFileInput')?.click()}
-                        className={`border-4 border-dashed rounded-lg p-12 text-center cursor-pointer transition-all ${dragOver
-                                ? 'border-accent-gold bg-accent-gold/5'
-                                : 'border-newsprint-darker hover:border-accent-gold/50 bg-newsprint'
-                            }`}
+                        className={clsx(
+                            'border-2 border-dashed rounded-2xl p-14 text-center cursor-pointer transition-all',
+                            dragOver
+                                ? 'border-accent bg-accent/5 shadow-glow'
+                                : 'border-border hover:border-accent/40 hover:bg-white/2'
+                        )}
                     >
                         <input
-                            id="resumeFileInput"
-                            type="file"
-                            accept=".tex"
+                            id="resumeFileInput" type="file" accept=".tex"
                             className="hidden"
                             onChange={e => e.target.files?.[0] && handleUpload(e.target.files[0])}
                         />
                         <div className="flex flex-col items-center gap-3">
                             {uploading ? (
                                 <>
-                                    <div className="w-12 h-12 border-4 border-accent-gold border-t-transparent rounded-full animate-spin" />
-                                    <p className="font-serif text-lg font-bold">Typesetting…</p>
+                                    <div className="w-12 h-12 border-2 border-accent border-t-transparent rounded-full animate-spin" />
+                                    <p className="font-display font-semibold text-txt-primary">Uploading…</p>
                                 </>
                             ) : (
                                 <>
-                                    <Upload className="w-12 h-12 text-ink-muted" />
-                                    <p className="font-serif text-xl font-bold text-ink">Drop your .tex resume here</p>
-                                    <p className="text-sm text-ink-muted">or click to browse</p>
-                                    <span className="text-xs bg-accent-gold text-ink px-3 py-1 rounded font-semibold uppercase tracking-wide">
+                                    <div className="w-14 h-14 rounded-2xl bg-accent/10 flex items-center justify-center">
+                                        <Upload className="w-7 h-7 text-accent-light" />
+                                    </div>
+                                    <div>
+                                        <p className="font-display font-semibold text-lg text-txt-primary">Drop your .tex resume</p>
+                                        <p className="text-sm text-txt-muted mt-1">or click to browse files</p>
+                                    </div>
+                                    <span className="text-xs bg-accent/10 text-accent-light border border-accent/30 px-3 py-1 rounded-full font-semibold uppercase tracking-wide">
                                         .tex files only
                                     </span>
                                 </>
@@ -96,45 +111,63 @@ export default function ResumePage() {
                         </div>
                     </div>
 
+                    {/* Message */}
                     {message && (
-                        <div className={`p-3 rounded border text-sm font-sans ${message.startsWith('✅') ? 'border-score-high/40 bg-green-50 text-score-high' : 'border-score-low/40 bg-red-50 text-score-low'}`}>
+                        <div className={clsx(
+                            'flex items-center gap-2 p-3 rounded-xl text-sm border',
+                            msgOk
+                                ? 'bg-emerald/10 border-emerald/30 text-emerald'
+                                : 'bg-danger/10 border-danger/30 text-danger'
+                        )}>
+                            {msgOk ? <CheckCircle className="w-4 h-4 flex-shrink-0" /> : <Info className="w-4 h-4 flex-shrink-0" />}
                             {message}
                         </div>
                     )}
 
-                    {/* Active resume display */}
+                    {/* Active resume */}
                     {activeResume?.resume_id && (
-                        <div className="bg-newsprint border-2 border-ink rounded shadow-newspaper p-5 animate-fade-in-up">
-                            <div className="flex items-center gap-3 mb-3">
-                                <CheckCircle className="w-5 h-5 text-score-high" />
-                                <div>
-                                    <h2 className="font-serif font-bold text-lg text-ink">Active Resume</h2>
-                                    <p className="text-sm text-ink-muted">{activeResume.filename}</p>
+                        <div className="glass rounded-2xl border border-border p-5 animate-fade-in-up">
+                            <div className="flex items-center gap-3 mb-4">
+                                <div className="p-2 rounded-lg bg-emerald/10">
+                                    <CheckCircle className="w-5 h-5 text-emerald" />
                                 </div>
+                                <div>
+                                    <h2 className="font-display font-semibold text-txt-primary">Active Resume</h2>
+                                    <p className="text-sm text-txt-muted">{activeResume.filename}</p>
+                                </div>
+                                <p className="ml-auto text-xs text-txt-muted">
+                                    {activeResume.uploaded_at ? new Date(activeResume.uploaded_at).toLocaleDateString() : '—'}
+                                </p>
                             </div>
-                            <div className="h-px bg-newsprint-dark mb-3" />
-                            <p className="text-xs font-mono text-ink-muted mb-2 uppercase tracking-widest">
-                                Preview (parsed LaTeX):
-                            </p>
-                            <pre className="text-xs font-mono text-ink bg-newsprint-dark rounded p-3 whitespace-pre-wrap leading-relaxed max-h-64 overflow-y-auto">
+                            <div className="h-px bg-border mb-4" />
+                            <p className="text-xs font-mono text-txt-muted mb-2 uppercase tracking-widest">Preview (parsed LaTeX):</p>
+                            <pre className="text-xs font-mono text-txt-secondary bg-base rounded-xl p-4 whitespace-pre-wrap leading-relaxed max-h-60 overflow-y-auto border border-border">
                                 {activeResume.content_preview}
                                 {activeResume.content_preview ? '…' : '(No content parsed yet)'}
                             </pre>
-                            <p className="text-xs text-ink-muted mt-2 text-right">
-                                Uploaded: {activeResume.uploaded_at ? new Date(activeResume.uploaded_at).toLocaleDateString() : '—'}
-                            </p>
                         </div>
                     )}
 
-                    {/* Instructions */}
-                    <div className="border border-newsprint-dark rounded p-5 bg-newsprint/50">
-                        <h3 className="font-serif font-bold text-base text-ink mb-3">How It Works</h3>
-                        <ol className="space-y-2 text-sm text-ink-muted font-sans">
-                            <li className="flex gap-3"><span className="font-bold text-accent-gold">1.</span> Upload your base .tex resume above.</li>
-                            <li className="flex gap-3"><span className="font-bold text-accent-gold">2.</span> Run a job scan from the sidebar to discover jobs.</li>
-                            <li className="flex gap-3"><span className="font-bold text-accent-gold">3.</span> Click "Generate AI" on any job card in the Pipeline.</li>
-                            <li className="flex gap-3"><span className="font-bold text-accent-gold">4.</span> Gemini AI tailors your resume for that specific job, optimizing for ATS keywords.</li>
-                            <li className="flex gap-3"><span className="font-bold text-accent-gold">5.</span> Download tailored .tex files from the Outreach page.</li>
+                    {/* How it works */}
+                    <div className="glass rounded-2xl border border-border p-5">
+                        <h3 className="font-display font-semibold text-txt-primary mb-4 flex items-center gap-2">
+                            <Info className="w-4 h-4 text-accent-light" /> How It Works
+                        </h3>
+                        <ol className="space-y-2.5">
+                            {[
+                                'Upload your base .tex resume above.',
+                                'Run a job scan from the sidebar to discover jobs.',
+                                'Click "AI Resume" on any job card in the Pipeline.',
+                                'Gemini AI tailors your resume for that job, optimizing ATS keywords.',
+                                'Download tailored .tex files from the Outreach page.',
+                            ].map((step, i) => (
+                                <li key={i} className="flex gap-3 text-sm text-txt-secondary">
+                                    <span className="flex-shrink-0 w-5 h-5 rounded-full bg-accent/15 border border-accent/30 text-accent-light text-xs flex items-center justify-center font-bold">
+                                        {i + 1}
+                                    </span>
+                                    {step}
+                                </li>
+                            ))}
                         </ol>
                     </div>
                 </div>

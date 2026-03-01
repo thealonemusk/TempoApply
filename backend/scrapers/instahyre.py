@@ -26,16 +26,48 @@ async def scrape_instahyre_jobs(
         page = await ctx.new_page()
 
         try:
-            # Login
+            # Login via Google OAuth (no password)
             await page.goto("https://www.instahyre.com/candidate/login/", timeout=30000)
             await page.wait_for_timeout(2000)
-            await page.fill('input[name="email"]', settings.instahyre_email)
-            await page.fill('input[name="password"]', settings.instahyre_password)
-            await page.click('button[type="submit"]')
-            await page.wait_for_timeout(4000)
-            logger.info("✅ InstaHyre login attempted")
+
+            # Find and click "Continue with Google" button
+            google_btn = await page.query_selector(
+                'a[href*="google"], button:has-text("Google"), [class*="google-login"], '
+                'a:has-text("Google"), .social-login a'
+            )
+            if not google_btn:
+                logger.error("InstaHyre: Could not find 'Continue with Google' button")
+                await browser.close()
+                return []
+
+            # Google OAuth opens in a popup
+            async with page.context.expect_page() as popup_info:
+                await google_btn.click()
+            google_page = await popup_info.value
+            await google_page.wait_for_load_state("domcontentloaded", timeout=20000)
+            await google_page.wait_for_timeout(2000)
+
+            # Fill Google email
+            email_input = await google_page.query_selector('input[type="email"]')
+            if email_input:
+                await email_input.fill(settings.instahyre_email)
+                await google_page.click('button:has-text("Next"), #identifierNext')
+                await google_page.wait_for_timeout(3000)
+
+            # If account-picker appears, click the matching account
+            try:
+                account = await google_page.query_selector(f'[data-email="{settings.instahyre_email}"]')
+                if account:
+                    await account.click()
+                    await google_page.wait_for_timeout(3000)
+            except Exception:
+                pass
+
+            # Wait for redirect back to InstaHyre
+            await page.wait_for_timeout(6000)
+            logger.info("✅ InstaHyre Google login successful")
         except Exception as e:
-            logger.error(f"InstaHyre login failed: {e}")
+            logger.error(f"InstaHyre Google login failed: {e}")
             await browser.close()
             return []
 

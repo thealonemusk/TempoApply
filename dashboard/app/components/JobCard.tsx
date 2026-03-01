@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { ExternalLink, Sparkles, ChevronRight } from 'lucide-react';
+import { ExternalLink, Sparkles, ChevronRight, MapPin } from 'lucide-react';
 import clsx from 'clsx';
 
 export type JobStatus =
@@ -27,23 +27,21 @@ export interface Job {
 function ScoreBadge({ score }: { score: number }) {
     const cls = score >= 75 ? 'score-high' : score >= 50 ? 'score-mid' : 'score-low';
     return (
-        <span className={clsx('text-xs font-mono font-bold px-1.5 py-0.5 rounded', cls)}>
+        <span className={clsx('text-xs font-mono font-bold px-2 py-0.5 rounded-full', cls)}>
             {Math.round(score)}
         </span>
     );
 }
 
+const PLATFORM_LABELS: Record<string, string> = {
+    linkedin: 'LinkedIn', indeed: 'Indeed', naukri: 'Naukri',
+    instahyre: 'InstaHyre', manual: 'Manual',
+};
+
 function PlatformBadge({ platform }: { platform: string }) {
-    const map: Record<string, string> = {
-        linkedin: 'LI',
-        indeed: 'IN',
-        naukri: 'NK',
-        instahyre: 'IH',
-        manual: 'M',
-    };
     return (
-        <span className={clsx('text-xs font-bold px-1.5 py-0.5 rounded uppercase tracking-wide', `badge-${platform}`)}>
-            {map[platform] || platform.slice(0, 2).toUpperCase()}
+        <span className={clsx('text-xs font-semibold px-2 py-0.5 rounded-full', `badge-${platform}`)}>
+            {PLATFORM_LABELS[platform] || platform}
         </span>
     );
 }
@@ -55,50 +53,58 @@ interface JobCardProps {
     generating?: boolean;
 }
 
+const STATUS_OPTIONS = ['discovered', 'scored', 'tailored', 'applied', 'interviewing', 'rejected', 'offer'];
+
 export function JobCard({ job, onStatusChange, onGenerate, generating }: JobCardProps) {
     return (
-        <div className="job-card bg-newsprint border border-newsprint-dark rounded shadow-newspaper p-3 space-y-2 animate-fade-in-up">
+        <div className="job-card glass rounded-xl p-3.5 space-y-2.5 animate-fade-in-up border border-border">
             {/* Header */}
             <div className="flex items-start justify-between gap-2">
                 <div className="flex-1 min-w-0">
-                    <p className="font-serif font-bold text-sm text-ink leading-tight truncate">{job.title}</p>
-                    <p className="text-xs text-ink-muted font-sans truncate">{job.company}</p>
+                    <p className="font-display font-semibold text-sm text-txt-primary leading-tight truncate">
+                        {job.title}
+                    </p>
+                    <p className="text-xs text-txt-secondary mt-0.5 truncate">{job.company}</p>
                 </div>
-                <div className="flex flex-col items-end gap-1 flex-shrink-0">
+                <div className="flex flex-col items-end gap-1.5 flex-shrink-0">
                     <ScoreBadge score={job.relevance_score} />
                     <PlatformBadge platform={job.platform} />
                 </div>
             </div>
 
-            {/* Location / seniority */}
-            <div className="flex items-center gap-2 flex-wrap">
+            {/* Meta */}
+            <div className="flex items-center gap-1.5 flex-wrap">
                 {job.location && (
-                    <span className="text-xs text-ink-muted">📍 {job.location}</span>
+                    <span className="flex items-center gap-1 text-xs text-txt-muted">
+                        <MapPin className="w-3 h-3" />{job.location}
+                    </span>
                 )}
                 {job.seniority_level && (
-                    <span className="text-xs bg-newsprint-dark px-1.5 py-0.5 rounded text-ink-muted capitalize">
+                    <span className="text-xs bg-white/5 border border-border px-1.5 py-0.5 rounded-full text-txt-secondary capitalize">
                         {job.seniority_level}
                     </span>
                 )}
                 {job.easy_apply && (
-                    <span className="text-xs bg-green-100 text-green-800 px-1.5 py-0.5 rounded">Easy Apply</span>
+                    <span className="text-xs bg-emerald/20 text-emerald border border-emerald/30 px-1.5 py-0.5 rounded-full">
+                        Easy Apply
+                    </span>
                 )}
             </div>
 
             {/* Fit reason */}
             {job.fit_reason && (
-                <p className="text-xs text-ink/70 italic leading-relaxed line-clamp-2 border-l-2 border-accent-gold pl-2">
+                <p className="text-xs text-txt-secondary italic leading-relaxed line-clamp-2 border-l-2 border-accent pl-2.5">
                     {job.fit_reason}
                 </p>
             )}
 
             {/* Actions */}
-            <div className="flex items-center gap-1.5 pt-1 border-t border-newsprint-dark flex-wrap">
+            <div className="flex items-center gap-1.5 pt-1 border-t border-border flex-wrap">
                 <a
                     href={job.url}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="flex items-center gap-1 text-xs text-accent-blue hover:underline"
+                    className="flex items-center gap-1 text-xs text-accent-light hover:text-accent transition-colors"
                 >
                     <ExternalLink className="w-3 h-3" /> View
                 </a>
@@ -106,18 +112,18 @@ export function JobCard({ job, onStatusChange, onGenerate, generating }: JobCard
                     onClick={() => onGenerate(job.id)}
                     disabled={generating}
                     className={clsx(
-                        'flex items-center gap-1 text-xs px-2 py-0.5 rounded border transition-colors',
+                        'flex items-center gap-1 text-xs px-2 py-0.5 rounded-full border transition-all',
                         generating
-                            ? 'border-accent-gold/40 text-accent-gold/40 cursor-not-allowed'
-                            : 'border-accent-gold text-accent-gold hover:bg-accent-gold hover:text-ink'
+                            ? 'border-gold/30 text-gold/40 cursor-not-allowed'
+                            : 'border-gold/50 text-gold hover:bg-gold/10 hover:border-gold'
                     )}
                 >
                     <Sparkles className="w-3 h-3" />
-                    {generating ? 'Generating…' : 'Generate AI'}
+                    {generating ? 'Working…' : 'AI Resume'}
                 </button>
                 <Link
                     href={`/outreach?job=${job.id}`}
-                    className="flex items-center gap-1 text-xs text-ink-muted hover:text-ink"
+                    className="flex items-center gap-0.5 text-xs text-txt-muted hover:text-txt-primary transition-colors ml-auto"
                 >
                     Outreach <ChevronRight className="w-3 h-3" />
                 </Link>
@@ -127,10 +133,12 @@ export function JobCard({ job, onStatusChange, onGenerate, generating }: JobCard
             <select
                 value={job.status}
                 onChange={(e) => onStatusChange(job.id, e.target.value)}
-                className="w-full text-xs border border-newsprint-dark rounded bg-newsprint text-ink-muted py-1 px-1.5 focus:outline-none focus:border-accent-gold"
+                className="input-field w-full text-xs rounded-lg px-2.5 py-1.5 cursor-pointer"
             >
-                {['discovered', 'scored', 'tailored', 'applied', 'interviewing', 'rejected', 'offer'].map(s => (
-                    <option key={s} value={s}>{s.charAt(0).toUpperCase() + s.slice(1)}</option>
+                {STATUS_OPTIONS.map(s => (
+                    <option key={s} value={s} style={{ background: '#111827' }}>
+                        {s.charAt(0).toUpperCase() + s.slice(1)}
+                    </option>
                 ))}
             </select>
         </div>
