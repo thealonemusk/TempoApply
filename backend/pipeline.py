@@ -84,6 +84,13 @@ async def run_scan_pipeline(
 
     if not base_resume_text:
         logger.warning("No base resume found! Analysis will be limited.")
+        dynamic_roles = settings.target_roles_list
+    else:
+        logger.info("🧠 Analyzing resume to generate perfect job titles...")
+        from backend.ai.analyzer import generate_search_queries
+        dynamic_roles = generate_search_queries(base_resume_text, max_queries=3)
+
+    logger.info(f"Targeting these dynamic AI roles: {dynamic_roles}")
 
     all_raw_jobs = []
 
@@ -91,7 +98,7 @@ async def run_scan_pipeline(
         try:
             from backend.scrapers.linkedin import scrape_linkedin_jobs
             logger.info("🔍 Scraping LinkedIn...")
-            jobs = await scrape_linkedin_jobs(max_jobs=max_jobs_per_platform, headless=headless)
+            jobs = await scrape_linkedin_jobs(roles=dynamic_roles, max_jobs=max_jobs_per_platform, headless=headless)
             all_raw_jobs.extend(jobs)
             logger.info(f"LinkedIn: {len(jobs)} jobs")
         except Exception as e:
@@ -101,7 +108,7 @@ async def run_scan_pipeline(
         try:
             from backend.scrapers.indeed import scrape_indeed_jobs
             logger.info("🔍 Scraping Indeed...")
-            jobs = await scrape_indeed_jobs(max_jobs=max_jobs_per_platform, headless=headless)
+            jobs = await scrape_indeed_jobs(roles=dynamic_roles, max_jobs=max_jobs_per_platform, headless=headless)
             all_raw_jobs.extend(jobs)
             logger.info(f"Indeed: {len(jobs)} jobs")
         except Exception as e:
@@ -111,7 +118,7 @@ async def run_scan_pipeline(
         try:
             from backend.scrapers.naukri import scrape_naukri_jobs
             logger.info("🔍 Scraping Naukri...")
-            jobs = await scrape_naukri_jobs(max_jobs=max_jobs_per_platform, headless=headless)
+            jobs = await scrape_naukri_jobs(roles=dynamic_roles, max_jobs=max_jobs_per_platform, headless=headless)
             all_raw_jobs.extend(jobs)
             logger.info(f"Naukri: {len(jobs)} jobs")
         except Exception as e:
@@ -121,7 +128,7 @@ async def run_scan_pipeline(
         try:
             from backend.scrapers.instahyre import scrape_instahyre_jobs
             logger.info("🔍 Scraping InstaHyre...")
-            jobs = await scrape_instahyre_jobs(max_jobs=max_jobs_per_platform, headless=headless)
+            jobs = await scrape_instahyre_jobs(roles=dynamic_roles, max_jobs=max_jobs_per_platform, headless=headless)
             all_raw_jobs.extend(jobs)
             logger.info(f"InstaHyre: {len(jobs)} jobs")
         except Exception as e:

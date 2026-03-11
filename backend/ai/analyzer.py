@@ -69,6 +69,43 @@ Score guidelines:
     }
 
 
+def generate_search_queries(base_resume_text: str, max_queries: int = 3) -> list[str]:
+    """
+    Read the user's resume and generate highly targeted job titles
+    to be used in job board search queries (e.g., "Senior React Developer").
+    """
+    if not base_resume_text:
+        return settings.target_roles_list
+
+    prompt = f"""You are an expert technical recruiter. Based on the following candidate resume,
+generate up to {max_queries} highly optimal and specific job titles that this candidate is perfectly suited for.
+These will be plugged directly into LinkedIn/Indeed search bars.
+Keep them concise (e.g., "Frontend Developer", "Senior Python Backend Engineer").
+
+CANDIDATE RESUME:
+{base_resume_text[:4000]}
+
+Respond ONLY with valid JSON in this format:
+{{
+  "queries": ["title 1", "title 2", "title 3"]
+}}
+"""
+    try:
+        response = _client.models.generate_content(model=_MODEL, contents=prompt)
+        text = response.text.strip()
+        json_match = re.search(r'\{.*\}', text, re.DOTALL)
+        if json_match:
+            result = json.loads(json_match.group(0))
+            if "queries" in result and isinstance(result["queries"], list):
+                logger.info(f"Dynamically targeted job roles: {result['queries']}")
+                return result["queries"][:max_queries]
+    except Exception as e:
+        logger.error(f"Failed to generate search queries: {e}")
+
+    # Fallback to static settings
+    return settings.target_roles_list
+
+
 def batch_filter_jobs(jobs: list, base_resume_text: str) -> list:
     """
     Quick-filter a list of job dicts (with title + jd_text) using Gemini.

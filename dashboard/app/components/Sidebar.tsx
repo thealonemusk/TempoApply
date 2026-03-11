@@ -44,13 +44,12 @@ export default function Sidebar() {
     };
 
     return (
-        <aside className="w-60 min-h-screen flex flex-col border-r border-border-bright"
-            style={{ background: 'linear-gradient(180deg, #0a0f1e 0%, #080c14 100%)' }}>
+        <aside className="w-60 min-h-screen flex flex-col border-r border-border bg-card">
 
             {/* Logo */}
             <div className="px-5 py-6 border-b border-border">
                 <div className="flex items-center gap-2.5 mb-0.5">
-                    <div className="w-7 h-7 rounded-lg bg-accent flex items-center justify-center shadow-glow-sm flex-shrink-0">
+                    <div className="w-7 h-7 rounded-sm bg-accent flex items-center justify-center flex-shrink-0">
                         <Sparkles className="w-4 h-4 text-white" />
                     </div>
                     <span className="font-display font-bold text-lg text-txt-primary tracking-tight">
@@ -71,13 +70,12 @@ export default function Sidebar() {
                             className={clsx(
                                 'flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-150',
                                 active
-                                    ? 'nav-active'
-                                    : 'text-txt-secondary hover:text-txt-primary hover:bg-white/5'
+                                    ? 'bg-accent/10 border border-accent/20 text-accent font-semibold'
+                                    : 'text-txt-secondary hover:text-txt-primary hover:bg-black/5'
                             )}
                         >
-                            <Icon className={clsx('w-4 h-4 flex-shrink-0', active ? 'text-accent-light' : 'text-txt-muted')} />
+                            <Icon className={clsx('w-4 h-4 flex-shrink-0', active ? 'text-accent' : 'text-txt-muted')} />
                             <span>{label}</span>
-                            {active && <span className="ml-auto w-1 h-4 rounded-full bg-accent-light opacity-70" />}
                         </Link>
                     );
                 })}
@@ -91,8 +89,8 @@ export default function Sidebar() {
                     className={clsx(
                         'w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-lg text-sm font-semibold transition-all duration-200',
                         scanning
-                            ? 'bg-accent/20 text-accent-light cursor-not-allowed'
-                            : 'bg-accent hover:bg-accent-2 text-white shadow-glow cursor-pointer'
+                            ? 'bg-accent/20 text-accent cursor-not-allowed'
+                            : 'bg-accent hover:bg-accent-2 text-white shadow-sm cursor-pointer'
                     )}
                 >
                     {scanning

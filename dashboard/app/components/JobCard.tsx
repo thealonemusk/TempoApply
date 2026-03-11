@@ -57,7 +57,7 @@ const STATUS_OPTIONS = ['discovered', 'scored', 'tailored', 'applied', 'intervie
 
 export function JobCard({ job, onStatusChange, onGenerate, generating }: JobCardProps) {
     return (
-        <div className="job-card glass rounded-xl p-3.5 space-y-2.5 animate-fade-in-up border border-border">
+        <div className="job-card bg-card rounded-xl p-3.5 space-y-2.5 animate-fade-in-up border border-border shadow-card">
             {/* Header */}
             <div className="flex items-start justify-between gap-2">
                 <div className="flex-1 min-w-0">
@@ -80,7 +80,7 @@ export function JobCard({ job, onStatusChange, onGenerate, generating }: JobCard
                     </span>
                 )}
                 {job.seniority_level && (
-                    <span className="text-xs bg-white/5 border border-border px-1.5 py-0.5 rounded-full text-txt-secondary capitalize">
+                    <span className="text-xs bg-black/5 border border-border px-1.5 py-0.5 rounded-full text-txt-secondary capitalize">
                         {job.seniority_level}
                     </span>
                 )}
@@ -104,7 +104,7 @@ export function JobCard({ job, onStatusChange, onGenerate, generating }: JobCard
                     href={job.url}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="flex items-center gap-1 text-xs text-accent-light hover:text-accent transition-colors"
+                    className="flex items-center gap-1 text-xs text-accent hover:text-accent-2 transition-colors"
                 >
                     <ExternalLink className="w-3 h-3" /> View
                 </a>
@@ -136,7 +136,7 @@ export function JobCard({ job, onStatusChange, onGenerate, generating }: JobCard
                 className="input-field w-full text-xs rounded-lg px-2.5 py-1.5 cursor-pointer"
             >
                 {STATUS_OPTIONS.map(s => (
-                    <option key={s} value={s} style={{ background: '#111827' }}>
+                    <option key={s} value={s} className="bg-card text-txt-primary">
                         {s.charAt(0).toUpperCase() + s.slice(1)}
                     </option>
                 ))}
