@@ -94,6 +94,8 @@ export function JobTableRow({ job, onStatusChange, onGenerate, generating }: Job
                     >
                         <ExternalLink className="w-3.5 h-3.5" />
                     </a>
+                    {/* Hiding tailoring/outreach for now as per user request */}
+                    {/* 
                     <button
                         onClick={() => onGenerate(job.id)}
                         disabled={generating}
@@ -113,7 +115,8 @@ export function JobTableRow({ job, onStatusChange, onGenerate, generating }: Job
                         title="Outreach"
                     >
                         <ChevronRight className="w-3.5 h-3.5" />
-                    </Link>
+                    </Link> 
+                    */}
                 </div>
             </td>
         </tr>

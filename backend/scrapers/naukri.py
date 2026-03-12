@@ -80,7 +80,7 @@ async def scrape_naukri_jobs(
             await browser.close()
             return []
 
-        for role in roles[:2]:
+        for role in roles:
             for location in locations[:2]:
                 try:
                     search_url = (

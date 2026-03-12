@@ -7,13 +7,13 @@ import re
 import os
 from datetime import datetime
 from pathlib import Path
-from google import genai
+from openai import OpenAI
 from loguru import logger
 
 from backend.config import settings
 
-_client = genai.Client(api_key=settings.gemini_api_key)
-_MODEL = "gemini-1.5-flash"
+_client = OpenAI(api_key=settings.gpt_key)
+_MODEL = "gpt-4o"
 
 
 def tailor_resume(
@@ -62,18 +62,19 @@ Respond with ONLY valid JSON:
 }}"""
 
     try:
-        response = _client.models.generate_content(model=_MODEL, contents=prompt)
-        text = response.text.strip()
-        # Extract JSON
-        json_match = re.search(r'\{.*\}', text, re.DOTALL)
-        if json_match:
-            result = json.loads(json_match.group(0))
-            tailored_tex = result.get("tailored_tex", base_resume_tex)
-            return {
-                "tailored_tex": tailored_tex,
-                "changes_summary": result.get("changes_summary", ""),
-                "top_keywords_added": result.get("top_keywords_added", []),
-            }
+        response = _client.chat.completions.create(
+            model=_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"}
+        )
+        text = response.choices[0].message.content.strip()
+        result = json.loads(text)
+        tailored_tex = result.get("tailored_tex", base_resume_tex)
+        return {
+            "tailored_tex": tailored_tex,
+            "changes_summary": result.get("changes_summary", ""),
+            "top_keywords_added": result.get("top_keywords_added", []),
+        }
     except Exception as e:
         logger.error(f"Resume tailoring failed: {e}")
 

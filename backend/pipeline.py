@@ -88,7 +88,7 @@ async def run_scan_pipeline(
     else:
         logger.info("🧠 Analyzing resume to generate perfect job titles...")
         from backend.ai.analyzer import generate_search_queries
-        dynamic_roles = generate_search_queries(base_resume_text, max_queries=3)
+        dynamic_roles = generate_search_queries(base_resume_text, max_queries=5)
 
     logger.info(f"Targeting these dynamic AI roles: {dynamic_roles}")
 

@@ -13,6 +13,7 @@ if not env_path.exists():
 class Settings(BaseSettings):
     # AI
     gemini_api_key: str = ""
+    gpt_key: str = ""
 
     # Platform credentials
     linkedin_email: str = ""

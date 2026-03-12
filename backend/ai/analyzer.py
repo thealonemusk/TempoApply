@@ -4,13 +4,13 @@ identify missing skills relative to the candidate's base resume.
 """
 import json
 import re
-from google import genai
+from openai import OpenAI
 from loguru import logger
 
 from backend.config import settings
 
-_client = genai.Client(api_key=settings.gemini_api_key)
-_MODEL = "gemini-1.5-flash"
+_client = OpenAI(api_key=settings.gpt_key)
+_MODEL = "gpt-4o"
 
 
 def analyze_jd(jd_text: str, base_resume_text: str, job_title: str = "") -> dict:
@@ -48,13 +48,14 @@ Score guidelines:
 """
 
     try:
-        response = _client.models.generate_content(model=_MODEL, contents=prompt)
-        text = response.text.strip()
-        # Extract JSON from response
-        json_match = re.search(r'\{.*\}', text, re.DOTALL)
-        if json_match:
-            result = json.loads(json_match.group(0))
-            return result
+        response = _client.chat.completions.create(
+            model=_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"}
+        )
+        text = response.choices[0].message.content.strip()
+        result = json.loads(text)
+        return result
     except Exception as e:
         logger.error(f"JD analysis failed: {e}")
 
@@ -91,14 +92,16 @@ Respond ONLY with valid JSON in this format:
 }}
 """
     try:
-        response = _client.models.generate_content(model=_MODEL, contents=prompt)
-        text = response.text.strip()
-        json_match = re.search(r'\{.*\}', text, re.DOTALL)
-        if json_match:
-            result = json.loads(json_match.group(0))
-            if "queries" in result and isinstance(result["queries"], list):
-                logger.info(f"Dynamically targeted job roles: {result['queries']}")
-                return result["queries"][:max_queries]
+        response = _client.chat.completions.create(
+            model=_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"}
+        )
+        text = response.choices[0].message.content.strip()
+        result = json.loads(text)
+        if "queries" in result and isinstance(result["queries"], list):
+            logger.info(f"Dynamically targeted job roles: {result['queries']}")
+            return result["queries"][:max_queries]
     except Exception as e:
         logger.error(f"Failed to generate search queries: {e}")
 

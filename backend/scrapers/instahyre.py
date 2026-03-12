@@ -71,7 +71,7 @@ async def scrape_instahyre_jobs(
             await browser.close()
             return []
 
-        for role in roles[:2]:
+        for role in roles:
             try:
                 search_url = (
                     f"https://www.instahyre.com/search-jobs/"

@@ -4,13 +4,13 @@ personalized, concise outreach messages for each job application.
 """
 import json
 import re
-from google import genai
+from openai import OpenAI
 from loguru import logger
 
 from backend.config import settings
 
-_client = genai.Client(api_key=settings.gemini_api_key)
-_MODEL = "gemini-1.5-flash"
+_client = OpenAI(api_key=settings.gpt_key)
+_MODEL = "gpt-4o"
 
 
 def generate_cold_email(
@@ -45,8 +45,11 @@ Write a compelling cold email to the recruiter. Rules:
 Output ONLY the email body text, no subject line, no JSON."""
 
     try:
-        response = _client.models.generate_content(model=_MODEL, contents=prompt)
-        return response.text.strip()
+        response = _client.chat.completions.create(
+            model=_MODEL,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return response.choices[0].message.content.strip()
     except Exception as e:
         logger.error(f"Cold email generation failed: {e}")
         return f"""{recruiter_greeting}
@@ -88,8 +91,11 @@ Rules:
 Output ONLY the message text."""
 
     try:
-        response = _client.models.generate_content(model=_MODEL, contents=prompt)
-        msg = response.text.strip()
+        response = _client.chat.completions.create(
+            model=_MODEL,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        msg = response.choices[0].message.content.strip()
         return msg[:300]  # Safety trim
     except Exception as e:
         logger.error(f"LinkedIn message generation failed: {e}")
@@ -127,8 +133,11 @@ Rules:
 Output ONLY the letter body (no "Dear Hiring Manager" header needed)."""
 
     try:
-        response = _client.models.generate_content(model=_MODEL, contents=prompt)
-        return response.text.strip()
+        response = _client.chat.completions.create(
+            model=_MODEL,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return response.choices[0].message.content.strip()
     except Exception as e:
         logger.error(f"Cover letter generation failed: {e}")
         return ""

@@ -86,7 +86,7 @@ async def scrape_linkedin_jobs(
             await browser.close()
             return []
 
-        for role in roles[:2]:  # Limit to first 2 roles per scan
+        for role in roles:
             for location in locations[:2]:
                 try:
                     search_url = (

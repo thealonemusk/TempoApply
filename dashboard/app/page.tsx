@@ -79,18 +79,18 @@ export default function PipelinePage() {
     <div className="flex min-h-screen">
       <Sidebar />
       <main className="flex-1 overflow-x-auto overflow-y-auto flex flex-col bg-[#FAFAFA]">
-        
+
         {/* Header with Search and Actions */}
         <header className="bg-card border-b border-border px-8 py-5 flex items-center justify-between sticky top-0 z-20 shadow-sm">
           <div className="flex items-center gap-4 bg-[#F4F4F5] px-4 py-2 rounded-xl w-96 border border-border">
             <Search className="w-4 h-4 text-txt-muted" />
-            <input 
-              type="text" 
-              placeholder="Search jobs, skills, or companies..." 
+            <input
+              type="text"
+              placeholder="Search jobs, skills, or companies..."
               className="bg-transparent border-none outline-none text-sm text-txt-primary placeholder-txt-muted w-full"
             />
           </div>
-          
+
           <div className="flex items-center gap-3">
             <select
               value={filterPlatform}
@@ -120,24 +120,24 @@ export default function PipelinePage() {
         </header>
 
         <div className="p-8 max-w-7xl mx-auto w-full space-y-8">
-          
+
           {/* Top Hero Section */}
           <section className="bg-accent rounded-3xl p-8 text-white relative overflow-hidden shadow-card">
             <div className="relative z-10 flex justify-between items-end">
-                <div>
-                    <h2 className="text-accent-foreground/80 font-medium text-sm mb-2 tracking-wide uppercase">Total Jobs Scanned</h2>
-                    <div className="text-6xl font-display font-bold tracking-tight">{jobs.length}</div>
+              <div>
+                <h2 className="text-accent-foreground/80 font-medium text-sm mb-2 tracking-wide uppercase">Total Jobs Scanned</h2>
+                <div className="text-6xl font-display font-bold tracking-tight">{jobs.length}</div>
+              </div>
+              <div className="flex gap-4">
+                <div className="bg-black/10 backdrop-blur-md rounded-2xl px-6 py-4 border border-white/10">
+                  <p className="text-white/70 text-xs font-medium uppercase tracking-wider mb-1">High Matches</p>
+                  <p className="text-2xl font-bold">{jobs.filter(j => j.relevance_score > 75).length}</p>
                 </div>
-                <div className="flex gap-4">
-                     <div className="bg-black/10 backdrop-blur-md rounded-2xl px-6 py-4 border border-white/10">
-                        <p className="text-white/70 text-xs font-medium uppercase tracking-wider mb-1">High Matches</p>
-                        <p className="text-2xl font-bold">{jobs.filter(j => j.relevance_score > 75).length}</p>
-                     </div>
-                     <div className="bg-white/10 backdrop-blur-md rounded-2xl px-6 py-4 border border-white/20">
-                        <p className="text-white/80 text-xs font-medium uppercase tracking-wider mb-1">Pending Action</p>
-                        <p className="text-2xl font-bold">{jobs.filter(j => j.status === 'discovered' || j.status === 'scored').length}</p>
-                     </div>
+                <div className="bg-white/10 backdrop-blur-md rounded-2xl px-6 py-4 border border-white/20">
+                  <p className="text-white/80 text-xs font-medium uppercase tracking-wider mb-1">Pending Action</p>
+                  <p className="text-2xl font-bold">{jobs.filter(j => j.status === 'discovered' || j.status === 'scored').length}</p>
                 </div>
+              </div>
             </div>
             {/* Decorative background shape echoing Sequence */}
             <div className="absolute -right-20 -top-40 w-[500px] h-[500px] bg-white/5 rounded-full blur-3xl" />
@@ -146,96 +146,96 @@ export default function PipelinePage() {
           {/* Setup / Metrics Row */}
           <section className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div className="lg:col-span-2 bg-card rounded-3xl p-6 border border-border shadow-sm flex flex-col">
-                <div className="flex justify-between items-center mb-6">
-                    <h3 className="font-display font-bold text-lg text-txt-primary">Scraping Activity</h3>
-                    <select className="text-xs text-txt-secondary bg-transparent border-none outline-none cursor-pointer">
-                        <option>Last 7 Days</option>
-                    </select>
-                </div>
-                <div className="flex-1 min-h-[200px] w-full">
-                    <ResponsiveContainer width="100%" height="100%">
-                        <BarChart data={chartData} margin={{ top: 0, right: 0, left: -20, bottom: 0 }}>
-                            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E5E7EB" />
-                            <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#6B7280' }} dy={10} />
-                            <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#6B7280' }} />
-                            <Tooltip 
-                                cursor={{ fill: '#F3F4F6' }} 
-                                contentStyle={{ borderRadius: '12px', border: '1px solid #E5E7EB', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }} 
-                            />
-                            <Bar dataKey="jobs" fill="#0d7f6c" radius={[4, 4, 0, 0]} maxBarSize={40} />
-                        </BarChart>
-                    </ResponsiveContainer>
-                </div>
+              <div className="flex justify-between items-center mb-6">
+                <h3 className="font-display font-bold text-lg text-txt-primary">Scraping Activity</h3>
+                <select className="text-xs text-txt-secondary bg-transparent border-none outline-none cursor-pointer">
+                  <option>Last 7 Days</option>
+                </select>
+              </div>
+              <div className="flex-1 min-h-[200px] w-full">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={chartData} margin={{ top: 0, right: 0, left: -20, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E5E7EB" />
+                    <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#6B7280' }} dy={10} />
+                    <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#6B7280' }} />
+                    <Tooltip
+                      cursor={{ fill: '#F3F4F6' }}
+                      contentStyle={{ borderRadius: '12px', border: '1px solid #E5E7EB', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
+                    />
+                    <Bar dataKey="jobs" fill="#0d7f6c" radius={[4, 4, 0, 0]} maxBarSize={40} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
             </div>
 
             <div className="space-y-6">
-                <div className="bg-card rounded-3xl p-6 border border-border shadow-sm flex items-center justify-between">
-                    <div>
-                        <p className="text-sm font-medium text-txt-muted mb-1">Applied</p>
-                        <p className="text-3xl font-display font-bold text-txt-primary">{applied}</p>
-                    </div>
-                    <div className="w-12 h-12 bg-blue-50 text-blue-500 rounded-full flex items-center justify-center">
-                        <Send className="w-6 h-6" />
-                    </div>
+              <div className="bg-card rounded-3xl p-6 border border-border shadow-sm flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium text-txt-muted mb-1">Applied</p>
+                  <p className="text-3xl font-display font-bold text-txt-primary">{applied}</p>
                 </div>
-                <div className="bg-card rounded-3xl p-6 border border-border shadow-sm flex items-center justify-between">
-                    <div>
-                        <p className="text-sm font-medium text-txt-muted mb-1">Interviews</p>
-                        <p className="text-3xl font-display font-bold text-txt-primary">{interviewing}</p>
-                    </div>
-                    <div className="w-12 h-12 bg-emerald-50 text-emerald-500 rounded-full flex items-center justify-center">
-                        <MessageSquare className="w-6 h-6" />
-                    </div>
+                <div className="w-12 h-12 bg-blue-50 text-blue-500 rounded-full flex items-center justify-center">
+                  <Send className="w-6 h-6" />
                 </div>
-                <div className="bg-card rounded-3xl p-6 border border-border shadow-sm flex items-center justify-between">
-                    <div>
-                        <p className="text-sm font-medium text-txt-muted mb-1">Offers</p>
-                        <p className="text-3xl font-display font-bold text-txt-primary">{offers}</p>
-                    </div>
-                    <div className="w-12 h-12 bg-gold/10 text-gold rounded-full flex items-center justify-center">
-                        <Award className="w-6 h-6" />
-                    </div>
+              </div>
+              <div className="bg-card rounded-3xl p-6 border border-border shadow-sm flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium text-txt-muted mb-1">Interviews</p>
+                  <p className="text-3xl font-display font-bold text-txt-primary">{interviewing}</p>
                 </div>
+                <div className="w-12 h-12 bg-emerald-50 text-emerald-500 rounded-full flex items-center justify-center">
+                  <MessageSquare className="w-6 h-6" />
+                </div>
+              </div>
+              <div className="bg-card rounded-3xl p-6 border border-border shadow-sm flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium text-txt-muted mb-1">Offers</p>
+                  <p className="text-3xl font-display font-bold text-txt-primary">{offers}</p>
+                </div>
+                <div className="w-12 h-12 bg-gold/10 text-gold rounded-full flex items-center justify-center">
+                  <Award className="w-6 h-6" />
+                </div>
+              </div>
             </div>
           </section>
 
           {/* Recent Activity Table */}
           <section className="bg-card rounded-3xl border border-border shadow-sm overflow-hidden flex flex-col">
             <div className="p-6 border-b border-border flex justify-between items-center">
-                <h3 className="font-display font-bold text-lg text-txt-primary">Recent Pipeline Activity</h3>
-                <button className="text-sm text-accent hover:text-accent-2 font-medium transition-colors">View All</button>
+              <h3 className="font-display font-bold text-lg text-txt-primary">Recent Pipeline Activity</h3>
+              <button className="text-sm text-accent hover:text-accent-2 font-medium transition-colors">View All</button>
             </div>
-            
+
             {loading ? (
-                <div className="p-12 text-center text-txt-muted text-sm">Loading jobs...</div>
+              <div className="p-12 text-center text-txt-muted text-sm">Loading jobs...</div>
             ) : filtered.length === 0 ? (
-                <div className="p-12 text-center text-txt-muted text-sm">No jobs match your criteria.</div>
+              <div className="p-12 text-center text-txt-muted text-sm">No jobs match your criteria.</div>
             ) : (
-                <div className="overflow-x-auto">
-                    <table className="w-full text-left border-collapse">
-                        <thead>
-                            <tr className="bg-[#F8FAFC] border-b border-border text-xs font-semibold text-txt-muted uppercase tracking-wider">
-                                <th className="p-4 font-medium">Status</th>
-                                <th className="p-4 font-medium">Job Details</th>
-                                <th className="p-4 font-medium text-center">Match Score</th>
-                                <th className="p-4 font-medium">Platform</th>
-                                <th className="p-4 font-medium">Date Discovered</th>
-                                <th className="p-4 font-medium text-right">Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {filtered.map(job => (
-                                <JobTableRow 
-                                    key={job.id} 
-                                    job={job} 
-                                    onStatusChange={handleStatusChange} 
-                                    onGenerate={handleGenerate}
-                                    generating={generating === job.id} 
-                                />
-                            ))}
-                        </tbody>
-                    </table>
-                </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse">
+                  <thead>
+                    <tr className="bg-[#F8FAFC] border-b border-border text-xs font-semibold text-txt-muted uppercase tracking-wider">
+                      <th className="p-4 font-medium">Status</th>
+                      <th className="p-4 font-medium">Job Details</th>
+                      <th className="p-4 font-medium text-center">Match Score</th>
+                      <th className="p-4 font-medium">Platform</th>
+                      <th className="p-4 font-medium">Date Discovered</th>
+                      <th className="p-4 font-medium text-right">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filtered.map(job => (
+                      <JobTableRow
+                        key={job.id}
+                        job={job}
+                        onStatusChange={handleStatusChange}
+                        onGenerate={handleGenerate}
+                        generating={generating === job.id}
+                      />
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             )}
           </section>
         </div>

@@ -26,7 +26,7 @@ async def scrape_indeed_jobs(
         browser, ctx = await create_browser_context(pw, headless=headless)
         page = await ctx.new_page()
 
-        for role in roles[:2]:
+        for role in roles:
             for location in locations[:2]:
                 try:
                     search_url = (
