@@ -3,8 +3,8 @@
 import Sidebar from './components/Sidebar';
 import { Job, JobStatus } from './components/JobCard';
 import { JobTableRow } from './components/JobTableRow';
-import { useEffect, useState } from 'react';
-import { RefreshCw, Plus, X, Briefcase, CheckSquare, TrendingUp, Search, Brain, Scissors, Send, MessageSquare, XCircle, Award } from 'lucide-react';
+import { useEffect, useState, useMemo } from 'react';
+import { RefreshCw, Plus, X, Briefcase, CheckSquare, TrendingUp, Search, Brain, Scissors, Send, MessageSquare, XCircle, Award, ChevronLeft, ChevronRight } from 'lucide-react';
 import clsx from 'clsx';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 
@@ -18,6 +18,13 @@ export default function PipelinePage() {
   const [addJobOpen, setAddJobOpen] = useState(false);
   const [manualForm, setManualForm] = useState({ title: '', company: '', url: '', jd_text: '', location: '' });
 
+  const [chartFilterDate, setChartFilterDate] = useState<string | null>(null);
+  const [sortOrder, setSortOrder] = useState<'desc' | 'asc'>('desc');
+
+  const [scanning, setScanning] = useState(false);
+  const [currentPage, setCurrentPage] = useState(1);
+  const jobsPerPage = 20;
+
   const fetchJobs = async () => {
     setLoading(true);
     try {
@@ -30,7 +37,58 @@ export default function PipelinePage() {
     setLoading(false);
   };
 
+  const fetchJobsQuietly = async () => {
+    try {
+      const res = await fetch(`${API}/api/jobs`);
+      const data = await res.json();
+      setJobs(data);
+    } catch {}
+  };
+
   useEffect(() => { fetchJobs(); }, []);
+
+  // Sync scan status on load
+  useEffect(() => {
+    const checkStatus = async () => {
+      try {
+        const res = await fetch(`${API}/api/scan/status`);
+        const data = await res.json();
+        setScanning(!!data.running);
+      } catch {}
+    };
+    checkStatus();
+  }, []);
+
+  // Poll exactly every 3 secs while scanning
+  useEffect(() => {
+    let interval: NodeJS.Timeout;
+    if (scanning) {
+      interval = setInterval(async () => {
+        try {
+          const res = await fetch(`${API}/api/scan/status`);
+          const data = await res.json();
+          fetchJobsQuietly(); // Quietly refresh jobs to show in real-time
+          if (!data.running) setScanning(false);
+        } catch {}
+      }, 3000);
+    }
+    return () => clearInterval(interval);
+  }, [scanning]);
+
+  const handleScan = async () => {
+    if (scanning) return;
+    try {
+      setScanning(true);
+      setCurrentPage(1); // pop them back to page 1 to see new arrivals
+      await fetch(`${API}/api/scan`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ platforms: ['linkedin', 'indeed', 'naukri', 'instahyre'], max_jobs_per_platform: 25, headless: true })
+      });
+    } catch {
+      setScanning(false);
+    }
+  };
 
   const handleStatusChange = async (id: string, status: string) => {
     await fetch(`${API}/api/jobs/${id}/status`, {
@@ -58,22 +116,58 @@ export default function PipelinePage() {
     fetchJobs();
   };
 
-  const filtered = filterPlatform ? jobs.filter(j => j.platform === filterPlatform) : jobs;
+  const handleClearJobs = async () => {
+    if (!confirm('Are you sure you want to clear all discovered non-applied jobs?')) return;
+    setLoading(true);
+    await fetch(`${API}/api/jobs/clear`, { method: 'DELETE' });
+    fetchJobs();
+  };
+ 
+  const filtered = jobs.filter(j => {
+    if (filterPlatform && j.platform !== filterPlatform) return false;
+    if (chartFilterDate) {
+       const jDate = j.discovered_at ? new Date(j.discovered_at).toLocaleDateString('en-CA') : null;
+       if (jDate !== chartFilterDate) return false;
+    }
+    return true;
+  });
+  
+  // Explicitly sort jobs by discovered_at
+  const sortedJobs = [...filtered].sort((a, b) => {
+    const tA = a.discovered_at ? new Date(a.discovered_at).getTime() : 0;
+    const tB = b.discovered_at ? new Date(b.discovered_at).getTime() : 0;
+    return sortOrder === 'desc' ? tB - tA : tA - tB;
+  });
+
+  const totalPages = Math.max(1, Math.ceil(sortedJobs.length / jobsPerPage));
+  const paginatedJobs = sortedJobs.slice((currentPage - 1) * jobsPerPage, currentPage * jobsPerPage);
+
+  // Reset page when filter changes
+  useEffect(() => { setCurrentPage(1); }, [filterPlatform, chartFilterDate, sortOrder]);
 
   const applied = jobs.filter(j => j.status === 'applied').length;
   const interviewing = jobs.filter(j => j.status === 'interviewing').length;
   const offers = jobs.filter(j => j.status === 'offer').length;
 
-  // Mock data for the chart based on jobs. It shows activity over the last 6 days.
-  const chartData = [
-    { name: 'Mon', jobs: Math.floor(jobs.length * 0.1) },
-    { name: 'Tue', jobs: Math.floor(jobs.length * 0.2) },
-    { name: 'Wed', jobs: Math.floor(jobs.length * 0.15) },
-    { name: 'Thu', jobs: Math.floor(jobs.length * 0.3) },
-    { name: 'Fri', jobs: Math.floor(jobs.length * 0.05) },
-    { name: 'Sat', jobs: Math.floor(jobs.length * 0.2) },
-    { name: 'Sun', jobs: jobs.length },
-  ];
+  // Dynamic chart data for the last 7 days.
+  const chartData = useMemo(() => {
+    const today = new Date();
+    const data = [];
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date(today);
+      d.setDate(today.getDate() - i);
+      const dateStr = d.toLocaleDateString('en-CA'); // YYYY-MM-DD format
+      const dateLabel = d.toLocaleDateString('en-US', { weekday: 'short' });
+      
+      const count = jobs.filter(j => {
+         if (!j.discovered_at) return false;
+         return new Date(j.discovered_at).toLocaleDateString('en-CA') === dateStr;
+      }).length;
+      
+      data.push({ name: dateLabel, fullDate: dateStr, jobs: count });
+    }
+    return data;
+  }, [jobs]);
 
   return (
     <div className="flex min-h-screen">
@@ -93,6 +187,14 @@ export default function PipelinePage() {
 
           <div className="flex items-center gap-3">
             <select
+              value={sortOrder}
+              onChange={e => setSortOrder(e.target.value as 'desc' | 'asc')}
+              className="input-field text-sm rounded-xl px-3 py-2 text-txt-secondary border border-border"
+            >
+              <option value="desc">Newest First</option>
+              <option value="asc">Oldest First</option>
+            </select>
+            <select
               value={filterPlatform}
               onChange={e => setFilterPlatform(e.target.value)}
               className="input-field text-sm rounded-xl px-3 py-2 text-txt-secondary border border-border"
@@ -108,6 +210,23 @@ export default function PipelinePage() {
               className="flex items-center gap-1.5 text-sm px-4 py-2 rounded-xl bg-card border border-border text-txt-secondary hover:border-accent hover:text-accent tracking-wide transition-all font-medium shadow-sm"
             >
               <Plus className="w-4 h-4" /> Add Manual
+            </button>
+            <button
+              onClick={handleClearJobs}
+              className="flex items-center gap-1.5 text-sm px-4 py-2 rounded-xl bg-danger/10 border border-danger/20 text-danger hover:bg-danger/20 tracking-wide transition-all font-medium shadow-sm"
+            >
+              <XCircle className="w-4 h-4" /> Clear Old Jobs
+            </button>
+            <button
+              onClick={handleScan}
+              disabled={scanning}
+              className={clsx(
+                "flex items-center gap-1.5 text-sm px-4 py-2 rounded-xl text-white transition-all font-medium shadow-sm tracking-wide",
+                scanning ? "bg-accent/80 cursor-not-allowed" : "bg-accent hover:bg-opacity-90"
+              )}
+            >
+              <RefreshCw className={clsx('w-4 h-4', scanning && 'animate-spin')} />
+              {scanning ? 'Scanning...' : 'Run Scan'}
             </button>
           </div>
         </header>
@@ -155,7 +274,18 @@ export default function PipelinePage() {
                       cursor={{ fill: '#F3F4F6' }}
                       contentStyle={{ borderRadius: '12px', border: '1px solid #E5E7EB', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
                     />
-                    <Bar dataKey="jobs" fill="#0d7f6c" radius={[4, 4, 0, 0]} maxBarSize={40} />
+                    <Bar 
+                      dataKey="jobs" 
+                      fill="#0d7f6c" 
+                      radius={[4, 4, 0, 0]} 
+                      maxBarSize={40}
+                      onClick={(data) => {
+                        if (data && data.fullDate) {
+                          setChartFilterDate(data.fullDate);
+                        }
+                      }}
+                      className="cursor-pointer hover:opacity-80 transition-opacity"
+                    />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
@@ -195,7 +325,17 @@ export default function PipelinePage() {
           {/* Recent Activity Table */}
           <section className="bg-card rounded-3xl border border-border shadow-sm overflow-hidden flex flex-col">
             <div className="p-6 border-b border-border flex justify-between items-center">
-              <h3 className="font-display font-bold text-lg text-txt-primary">Recent Pipeline Activity</h3>
+              <div className="flex items-center gap-4">
+                <h3 className="font-display font-bold text-lg text-txt-primary">Recent Pipeline Activity</h3>
+                {chartFilterDate && (
+                  <button 
+                    onClick={() => setChartFilterDate(null)}
+                    className="text-xs bg-accent/10 border border-accent/20 text-accent px-3 py-1 rounded-full flex items-center gap-1 hover:bg-accent/20 transition-colors shadow-sm"
+                  >
+                    Clear Filter ({chartFilterDate}) <X className="w-3 h-3" />
+                  </button>
+                )}
+              </div>
               <button className="text-sm text-accent hover:text-accent-2 font-medium transition-colors">View All</button>
             </div>
 
@@ -217,7 +357,7 @@ export default function PipelinePage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {filtered.map(job => (
+                    {paginatedJobs.map(job => (
                       <JobTableRow
                         key={job.id}
                         job={job}
@@ -228,6 +368,29 @@ export default function PipelinePage() {
                     ))}
                   </tbody>
                 </table>
+              </div>
+            )}
+            {!loading && sortedJobs.length > 0 && (
+              <div className="p-4 flex items-center justify-between text-sm text-txt-muted bg-[#F8FAFC]">
+                <span>
+                  Showing {((currentPage - 1) * jobsPerPage) + 1} to {Math.min(currentPage * jobsPerPage, sortedJobs.length)} of {sortedJobs.length} jobs
+                </span>
+                <div className="flex gap-2">
+                  <button
+                    disabled={currentPage === 1}
+                    onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                    className="flex items-center gap-1 px-3 py-1.5 rounded-lg border border-border bg-card hover:bg-black/5 disabled:opacity-50 disabled:cursor-not-allowed text-txt-secondary transition-colors"
+                  >
+                    <ChevronLeft className="w-4 h-4" /> Prev
+                  </button>
+                  <button
+                    disabled={currentPage === totalPages}
+                    onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                    className="flex items-center gap-1 px-3 py-1.5 rounded-lg border border-border bg-card hover:bg-black/5 disabled:opacity-50 disabled:cursor-not-allowed text-txt-secondary transition-colors"
+                  >
+                    Next <ChevronRight className="w-4 h-4" />
+                  </button>
+                </div>
               </div>
             )}
           </section>

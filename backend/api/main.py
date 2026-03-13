@@ -180,6 +180,20 @@ def update_job_status(job_id: str, update: StatusUpdate, db: Session = Depends(g
     return {"success": True, "status": update.status}
 
 
+@app.delete("/api/jobs/clear")
+def clear_discovered_jobs(db: Session = Depends(get_db)):
+    """Delete all jobs that are still in 'discovered' or 'scored' status to declutter the dashboard."""
+    jobs_to_delete = db.query(Job).filter(Job.status.in_(["discovered", "scored"])).all()
+    deleted_count = 0
+    for job in jobs_to_delete:
+        if job.application:
+            db.delete(job.application)
+        db.delete(job)
+        deleted_count += 1
+    db.commit()
+    return {"success": True, "deleted_count": deleted_count}
+
+
 @app.delete("/api/jobs/{job_id}")
 def delete_job(job_id: str, db: Session = Depends(get_db)):
     job = db.query(Job).filter(Job.id == job_id).first()

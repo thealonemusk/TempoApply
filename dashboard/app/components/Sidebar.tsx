@@ -80,34 +80,6 @@ export default function Sidebar() {
                     );
                 })}
             </nav>
-
-            {/* Scan CTA */}
-            <div className="p-4 border-t border-border space-y-2">
-                <button
-                    onClick={handleScan}
-                    disabled={scanning}
-                    className={clsx(
-                        'w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-lg text-sm font-semibold transition-all duration-200',
-                        scanning
-                            ? 'bg-accent/20 text-accent cursor-not-allowed'
-                            : 'bg-accent hover:bg-accent-2 text-white shadow-sm cursor-pointer'
-                    )}
-                >
-                    {scanning
-                        ? <RefreshCw className="w-4 h-4 animate-spin" />
-                        : <Zap className="w-4 h-4" />}
-                    {scanning ? 'Scanning…' : 'Run Scan'}
-                </button>
-                {scanStatus && (
-                    <p className={clsx(
-                        'text-xs text-center animate-fade-in',
-                        scanOk ? 'text-emerald' : 'text-danger'
-                    )}>
-                        {scanStatus}
-                    </p>
-                )}
-                <p className="text-xs text-txt-muted text-center">Scans all platforms</p>
-            </div>
         </aside>
     );
 }

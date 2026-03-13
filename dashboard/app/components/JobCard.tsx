@@ -6,7 +6,7 @@ import clsx from 'clsx';
 
 export type JobStatus =
     | 'discovered' | 'scored' | 'tailored'
-    | 'applied' | 'interviewing' | 'rejected' | 'offer';
+    | 'applied' | 'interviewing' | 'rejected' | 'offer' | 'ignored';
 
 export interface Job {
     id: string;
@@ -53,7 +53,7 @@ interface JobCardProps {
     generating?: boolean;
 }
 
-const STATUS_OPTIONS = ['discovered', 'scored', 'tailored', 'applied', 'interviewing', 'rejected', 'offer'];
+const STATUS_OPTIONS = ['discovered', 'scored', 'tailored', 'applied', 'interviewing', 'rejected', 'offer', 'ignored'];
 
 export function JobCard({ job, onStatusChange, onGenerate, generating }: JobCardProps) {
     return (

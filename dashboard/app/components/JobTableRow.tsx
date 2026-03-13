@@ -36,7 +36,7 @@ interface JobTableRowProps {
     generating?: boolean;
 }
 
-const STATUS_OPTIONS = ['discovered', 'scored', 'tailored', 'applied', 'interviewing', 'rejected', 'offer'];
+const STATUS_OPTIONS = ['discovered', 'scored', 'tailored', 'applied', 'interviewing', 'rejected', 'offer', 'ignored'];
 
 export function JobTableRow({ job, onStatusChange, onGenerate, generating }: JobTableRowProps) {
     return (
@@ -77,9 +77,11 @@ export function JobTableRow({ job, onStatusChange, onGenerate, generating }: Job
                 <PlatformBadge platform={job.platform} />
             </td>
 
-            {/* Date (mocked to discovered_at or today) */}
-            <td className="p-3 text-xs text-txt-muted">
-                {job.discovered_at ? new Date(job.discovered_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric'}) : 'Today'}
+            {/* Date */}
+            <td className="p-3 text-xs text-txt-muted whitespace-nowrap">
+                {job.discovered_at 
+                    ? new Date(job.discovered_at).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) 
+                    : 'Unknown Time'}
             </td>
 
             {/* Actions */}
