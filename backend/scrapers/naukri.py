@@ -67,27 +67,26 @@ async def scrape_naukri_jobs(
     max_jobs: int = 25,
     headless: bool = True,
 ) -> List[dict]:
-    """Scrape jobs from Naukri.com."""
+    """Scrape jobs from Naukri.com without login requirement."""
     roles = roles or settings.target_roles_list
-    locations = locations or settings.preferred_locations_list
+    locations = ["Bengaluru", "Delhi", "Noida", "Pune", "Hyderabad", "Mumbai"]
     all_jobs = []
 
     async with async_playwright() as pw:
+        # Launch browser without login dependencies 
         browser, ctx = await create_browser_context(pw, headless=headless)
         page = await ctx.new_page()
 
-        if not await _login_naukri(page):
-            await browser.close()
-            return []
-
+        # REMOVED: Google login requirement. Public search works best for simply harvesting URLs.
+        
         for role in roles:
-            for location in locations[:2]:
+            for location in locations:
                 try:
-                    search_url = (
-                        f"https://www.naukri.com/{role.lower().replace(' ', '-')}"
-                        f"-jobs-in-{location.lower().replace(' ', '-')}"
-                        f"?jobAge=1&sort=1"  # Last 1 day, newest first
-                    )
+                    job_slug = role.lower().replace(' ', '-')
+                    loc_slug = location.lower().replace(' ', '-')
+                    # Appending 0-to-2-years to the slug filter to restrict experience
+                    search_url = f"https://www.naukri.com/{job_slug}-jobs-in-{loc_slug}-0-to-2-years?jobAge=1&sort=1"
+                    
                     await page.goto(search_url, timeout=30000)
                     await page.wait_for_timeout(3000)
 

@@ -109,13 +109,6 @@ export default function PipelinePage() {
             >
               <Plus className="w-4 h-4" /> Add Manual
             </button>
-            <button
-              onClick={fetchJobs}
-              className="flex items-center gap-1.5 text-sm px-4 py-2 rounded-xl bg-accent text-white hover:bg-opacity-90 transition-all font-medium shadow-sm tracking-wide"
-            >
-              <RefreshCw className={clsx('w-4 h-4', loading && 'animate-spin')} />
-              Force Scan
-            </button>
           </div>
         </header>
 

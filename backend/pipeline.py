@@ -32,15 +32,45 @@ def get_base_resume_text() -> str:
 
 
 def upsert_jobs(jobs: list, db: Session) -> int:
-    """Insert new jobs (skip duplicates by URL). Returns count of new jobs."""
+    """Insert new jobs (skip duplicates by URL or Company+Title). Returns count of new jobs."""
     count = 0
+    seen_urls = set()
+    seen_title_company = set()
+    
+    frontend_keywords = ['frontend', 'front-end', 'front end', 'react', 'angular', 'vue', 'ui developer', 'user interface']
+    
     for job_data in jobs:
         url = job_data.get("url", "")
-        if not url:
+        title = job_data.get("title", "")
+        company = job_data.get("company", "")
+        
+        # Prevent blanks and intra-batch duplicates by URL
+        if not url or url in seen_urls:
             continue
-        existing = db.query(Job).filter(Job.url == url).first()
-        if existing:
+            
+        # Filter out frontend roles
+        if any(keyword in title.lower() for keyword in frontend_keywords):
+            logger.info(f"Skipping frontend role: {title}")
             continue
+            
+        # Deduplicate globally by (Title, Company)
+        tc_key = (title.lower().strip(), company.lower().strip())
+        if tc_key in seen_title_company:
+            continue
+            
+        seen_urls.add(url)
+        seen_title_company.add(tc_key)
+        
+        # Prevent database duplicates (by URL)
+        existing_url = db.query(Job).filter(Job.url == url).first()
+        if existing_url:
+            continue
+            
+        # Prevent database duplicates (by Title + Company)
+        existing_tc = db.query(Job).filter(Job.title.ilike(title), Job.company.ilike(company)).first()
+        if existing_tc:
+            continue
+            
         missing_skills = json.dumps(job_data.get("missing_skills", []))
         job = Job(
             title=job_data.get("title", ""),
@@ -79,16 +109,11 @@ async def run_scan_pipeline(
     3. Store in DB
     Returns summary stats.
     """
-    platforms = platforms or ["linkedin", "indeed", "naukri", "instahyre"]
-    base_resume_text = get_base_resume_text()
+    platforms = platforms or ["linkedin", "naukri", "indeed", "instahyre"]
+    base_resume_text = ""  # AI matching is disabled
 
-    if not base_resume_text:
-        logger.warning("No base resume found! Analysis will be limited.")
-        dynamic_roles = settings.target_roles_list
-    else:
-        logger.info("🧠 Analyzing resume to generate perfect job titles...")
-        from backend.ai.analyzer import generate_search_queries
-        dynamic_roles = generate_search_queries(base_resume_text, max_queries=5)
+    # Hardcoded roles per user request, bypassing AI to save quotas
+    dynamic_roles = ['Software Engineer', 'Backend Engineer', 'Full Stack Developer']
 
     logger.info(f"Targeting these dynamic AI roles: {dynamic_roles}")
 
@@ -136,22 +161,18 @@ async def run_scan_pipeline(
 
     logger.info(f"Total raw jobs found: {len(all_raw_jobs)}")
 
-    # Analyze all jobs
+    # Bypassing AI JD analysis due to quota limits
     analyzed_jobs = []
     for job in all_raw_jobs:
-        analysis = analyze_jd(
-            jd_text=job.get("jd_text", ""),
-            base_resume_text=base_resume_text,
-            job_title=job.get("title", ""),
-        )
-        job.update(analysis)
+        # Give a default passing score to save them all
+        job["score"] = 100
+        job["fit_reason"] = "Matched via broad search (AI disabled)"
         analyzed_jobs.append(job)
 
-    # Filter by score
-    qualified = [j for j in analyzed_jobs if j.get("score", 0) >= settings.min_relevance_score]
-    logger.info(f"Qualified jobs (score >= {settings.min_relevance_score}): {len(qualified)}")
+    # Filter by score (all will pass since score=100)
+    qualified = analyzed_jobs
+    logger.info(f"Adding {len(qualified)} jobs directly to database...")
 
-    # Store in DB
     db = SessionLocal()
     try:
         new_count = upsert_jobs(analyzed_jobs, db)

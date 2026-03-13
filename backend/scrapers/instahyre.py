@@ -13,15 +13,16 @@ from backend.config import settings
 async def scrape_instahyre_jobs(
     roles: List[str] = None,
     locations: List[str] = None,
-    max_jobs: int = 20,
+    max_jobs: int = 25,
     headless: bool = True,
 ) -> List[dict]:
-    """Scrape jobs from InstaHyre."""
+    """Scrape jobs from Instahyre India."""
     roles = roles or settings.target_roles_list
-    locations = locations or settings.preferred_locations_list
+    locations = ["Bengaluru", "Delhi", "Noida", "Pune", "Hyderabad", "Mumbai"]
     all_jobs = []
 
     async with async_playwright() as pw:
+        # Launch browser without login dependencies
         browser, ctx = await create_browser_context(pw, headless=headless)
         page = await ctx.new_page()
 
@@ -76,6 +77,7 @@ async def scrape_instahyre_jobs(
                 search_url = (
                     f"https://www.instahyre.com/search-jobs/"
                     f"?designation={role.replace(' ', '+')}"
+                    f"&experience=0-2" # 0-2 years
                 )
                 await page.goto(search_url, timeout=30000)
                 await page.wait_for_timeout(3000)
