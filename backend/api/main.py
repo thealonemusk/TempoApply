@@ -83,7 +83,7 @@ class ApplicationOut(BaseModel):
 
 
 class ScanRequest(BaseModel):
-    platforms: List[str] = ["linkedin", "indeed", "naukri", "instahyre"]
+    platforms: List[str] = ["linkedin", "indeed", "naukri", "instahyre", "company_careers"]
     max_jobs_per_platform: int = 20
     headless: bool = True
 
@@ -344,7 +344,7 @@ def get_analytics(db: Session = Depends(get_db)):
         by_status[status] = db.query(Job).filter(Job.status == status).count()
 
     by_platform = {}
-    for platform in ["linkedin", "indeed", "naukri", "instahyre", "manual"]:
+    for platform in ["linkedin", "indeed", "naukri", "instahyre", "company_careers", "manual"]:
         by_platform[platform] = db.query(Job).filter(Job.platform == platform).count()
 
     top_companies = (

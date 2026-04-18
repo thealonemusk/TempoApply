@@ -109,7 +109,7 @@ async def run_scan_pipeline(
     3. Store in DB
     Returns summary stats.
     """
-    platforms = platforms or ["linkedin", "naukri", "indeed", "instahyre"]
+    platforms = platforms or ["linkedin", "naukri", "indeed", "instahyre", "company_careers"]
     base_resume_text = ""  # AI matching is disabled
 
     # Hardcoded roles per user request, bypassing AI to save quotas
@@ -158,6 +158,16 @@ async def run_scan_pipeline(
             logger.info(f"InstaHyre: {len(jobs)} jobs")
         except Exception as e:
             logger.error(f"InstaHyre scraping error: {e}")
+
+    if "company_careers" in platforms:
+        try:
+            from backend.scrapers.company_careers import scrape_company_career_jobs
+            logger.info("🏢 Scraping top Indian company career sites (Greenhouse / Lever / custom)...")
+            jobs = await scrape_company_career_jobs(roles=dynamic_roles, max_jobs=max_jobs_per_platform)
+            all_raw_jobs.extend(jobs)
+            logger.info(f"Company careers: {len(jobs)} jobs")
+        except Exception as e:
+            logger.error(f"Company careers scraping error: {e}")
 
     logger.info(f"Total raw jobs found: {len(all_raw_jobs)}")
 

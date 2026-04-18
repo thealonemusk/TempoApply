@@ -36,6 +36,7 @@ function ScoreBadge({ score }: { score: number }) {
 const PLATFORM_LABELS: Record<string, string> = {
     linkedin: 'LinkedIn', indeed: 'Indeed', naukri: 'Naukri',
     instahyre: 'InstaHyre', manual: 'Manual',
+    company_careers: '🏢 Direct',
 };
 
 function PlatformBadge({ platform }: { platform: string }) {

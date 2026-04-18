@@ -91,11 +91,12 @@ body {
 .score-low  { background: rgba(239,68,68,0.15);  color: #f87171; border: 1px solid rgba(239,68,68,0.3); }
 
 /* ── Platform badges ── */
-.badge-linkedin  { background: rgba(0,119,181,0.2);  color: #60a5fa; border: 1px solid rgba(0,119,181,0.35); }
-.badge-indeed    { background: rgba(0,58,155,0.2);   color: #818cf8; border: 1px solid rgba(0,58,155,0.4); }
-.badge-naukri    { background: rgba(255,117,85,0.15); color: #fb923c; border: 1px solid rgba(255,117,85,0.35); }
-.badge-instahyre { background: rgba(108,99,255,0.2); color: #a78bfa; border: 1px solid rgba(108,99,255,0.4); }
-.badge-manual    { background: rgba(100,116,139,0.2); color: #94a3b8; border: 1px solid rgba(100,116,139,0.3); }
+.badge-linkedin         { background: rgba(0,119,181,0.2);  color: #60a5fa; border: 1px solid rgba(0,119,181,0.35); }
+.badge-indeed           { background: rgba(0,58,155,0.2);   color: #818cf8; border: 1px solid rgba(0,58,155,0.4); }
+.badge-naukri           { background: rgba(255,117,85,0.15); color: #fb923c; border: 1px solid rgba(255,117,85,0.35); }
+.badge-instahyre        { background: rgba(108,99,255,0.2); color: #a78bfa; border: 1px solid rgba(108,99,255,0.4); }
+.badge-manual           { background: rgba(100,116,139,0.2); color: #94a3b8; border: 1px solid rgba(100,116,139,0.3); }
+.badge-company_careers  { background: rgba(13,127,108,0.2); color: #34d399; border: 1px solid rgba(13,127,108,0.4); }
 
 /* ── Animations ── */
 @keyframes fadeInUp {
