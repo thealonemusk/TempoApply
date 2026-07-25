@@ -69,7 +69,7 @@ async def scrape_naukri_jobs(
 ) -> List[dict]:
     """Scrape jobs from Naukri.com without login requirement."""
     roles = roles or settings.target_roles_list
-    locations = ["Bengaluru", "Delhi", "Noida", "Pune", "Hyderabad", "Mumbai"]
+    locations = ["Remote", "Bengaluru", "Delhi", "Noida", "Pune", "Hyderabad", "Mumbai" , "Gurugram"]
     all_jobs = []
 
     async with async_playwright() as pw:

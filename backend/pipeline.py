@@ -1,6 +1,5 @@
 """
-Job Pipeline Orchestrator — orchestrates the full job discovery, analysis,
-resume tailoring, and outreach generation pipeline.
+Job Pipeline Orchestrator — orchestrates real-time multi-platform job discovery and experience validation.
 """
 import asyncio
 import json
@@ -8,27 +7,9 @@ from pathlib import Path
 from loguru import logger
 from sqlalchemy.orm import Session
 
-from backend.db.models import Job, Application, BaseResume, SessionLocal
-from backend.ai.analyzer import analyze_jd
-from backend.ai.resume_tailor import tailor_resume, save_tailored_resume
-from backend.ai.cold_email import generate_cold_email, generate_linkedin_message, generate_cover_letter
-from backend.ai.latex_parser import parse_tex_file, tex_to_text
+from backend.db.models import Job, SessionLocal
+from backend.scrapers.filter_utils import is_job_experience_valid
 from backend.config import settings
-
-
-def get_base_resume_text() -> str:
-    """Load and parse the active base resume from DB or file."""
-    db = SessionLocal()
-    try:
-        base = db.query(BaseResume).filter(BaseResume.is_active == True).first()
-        if base and base.content_text:
-            return base.content_text
-        # Fallback to file
-        if Path(settings.base_resume_path).exists():
-            return parse_tex_file(settings.base_resume_path)
-        return ""
-    finally:
-        db.close()
 
 
 def upsert_jobs(jobs: list, db: Session) -> int:
@@ -38,6 +19,7 @@ def upsert_jobs(jobs: list, db: Session) -> int:
     seen_title_company = set()
     
     frontend_keywords = ['frontend', 'front-end', 'front end', 'react', 'angular', 'vue', 'ui developer', 'user interface']
+    max_exp_years = getattr(settings, "experience_years", 2)
     
     for job_data in jobs:
         url = job_data.get("url", "")
@@ -51,6 +33,12 @@ def upsert_jobs(jobs: list, db: Session) -> int:
         # Filter out frontend roles
         if any(keyword in title.lower() for keyword in frontend_keywords):
             logger.info(f"Skipping frontend role: {title}")
+            continue
+            
+        # Enforce hard boundaries on experience (<2 yrs) and title keywords
+        is_valid, reason = is_job_experience_valid(job_data, max_years=max_exp_years)
+        if not is_valid:
+            logger.info(f"🛡️ Hard Filter Excluded [{company} - {title}]: {reason}")
             continue
             
         # Deduplicate globally by (Title, Company)
@@ -113,7 +101,7 @@ async def run_scan_pipeline(
     base_resume_text = ""  # AI matching is disabled
 
     # Hardcoded roles per user request, bypassing AI to save quotas
-    dynamic_roles = ['Software Engineer', 'Backend Engineer', 'Full Stack Developer']
+    dynamic_roles = ['Software Engineer', 'Backend Engineer', 'Full Stack Developer', 'AI Engineer' , 'Software Developer']
 
     logger.info(f"Targeting these dynamic AI roles: {dynamic_roles}")
 
@@ -195,90 +183,3 @@ async def run_scan_pipeline(
         "new_in_db": new_count,
         "platforms": platforms,
     }
-
-
-def generate_application_materials(job_id: str) -> dict:
-    """
-    For a given job, generate:
-    - Tailored resume (LaTeX)
-    - Cold email
-    - LinkedIn message
-    - Cover letter
-    Store in Application table and return.
-    """
-    db = SessionLocal()
-    try:
-        job = db.query(Job).filter(Job.id == job_id).first()
-        if not job:
-            return {"error": "Job not found"}
-
-        base_resume_text = get_base_resume_text()
-        base_resume_tex = ""
-        if Path(settings.base_resume_path).exists():
-            base_resume_tex = Path(settings.base_resume_path).read_text(encoding="utf-8", errors="ignore")
-
-        key_requirements = json.loads(job.missing_skills or "[]")
-
-        # Tailor resume
-        tailor_result = tailor_resume(
-            jd_text=job.jd_text,
-            base_resume_tex=base_resume_tex or base_resume_text,
-            job_title=job.title,
-            company=job.company,
-            key_requirements=key_requirements,
-        )
-        tailored_path = save_tailored_resume(
-            tailor_result["tailored_tex"], job.id, job.company
-        )
-
-        # Generate outreach
-        cold_email = generate_cold_email(
-            job_title=job.title,
-            company=job.company,
-            jd_text=job.jd_text,
-            recruiter_name=job.recruiter_name,
-            fit_reason=job.fit_reason,
-        )
-        linkedin_msg = generate_linkedin_message(
-            job_title=job.title,
-            company=job.company,
-            recruiter_name=job.recruiter_name,
-            fit_reason=job.fit_reason,
-        )
-        cover_letter = generate_cover_letter(
-            job_title=job.title,
-            company=job.company,
-            jd_text=job.jd_text,
-            base_resume_text=base_resume_text,
-        )
-
-        # Upsert Application record
-        app = db.query(Application).filter(Application.job_id == job_id).first()
-        if not app:
-            app = Application(job_id=job_id)
-            db.add(app)
-
-        app.tailored_resume_path = tailored_path
-        app.tailored_resume_text = tailor_result["tailored_tex"]
-        app.cold_email = cold_email
-        app.linkedin_message = linkedin_msg
-        app.cover_letter = cover_letter
-
-        job.status = "tailored"
-        db.commit()
-
-        logger.info(f"✅ Materials generated for: {job.company} - {job.title}")
-
-        return {
-            "job_id": job_id,
-            "tailored_resume_path": tailored_path,
-            "cold_email": cold_email,
-            "linkedin_message": linkedin_msg,
-            "cover_letter": cover_letter,
-            "changes_summary": tailor_result["changes_summary"],
-        }
-    except Exception as e:
-        logger.error(f"Material generation failed for {job_id}: {e}")
-        return {"error": str(e)}
-    finally:
-        db.close()

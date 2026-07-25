@@ -44,7 +44,7 @@ class Settings(BaseSettings):
 
     # Job preferences
     target_roles: str = "Software Engineer,Backend Engineer"
-    experience_years: int = 3
+    experience_years: int = 2
     preferred_locations: str = "Bengaluru,Remote"
     min_relevance_score: int = 60
     excluded_companies: str = ""

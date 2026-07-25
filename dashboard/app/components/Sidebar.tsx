@@ -10,9 +10,7 @@ import { useState } from 'react';
 import clsx from 'clsx';
 
 const NAV_ITEMS = [
-    { href: '/', icon: LayoutDashboard, label: 'Pipeline' },
-    { href: '/outreach', icon: Mail, label: 'Outreach' },
-    { href: '/resume', icon: FileText, label: 'Resume' },
+    { href: '/', icon: LayoutDashboard, label: 'Job Search' },
     { href: '/analytics', icon: BarChart2, label: 'Analytics' },
     { href: '/settings', icon: Settings, label: 'Settings' },
 ];

@@ -1,6 +1,6 @@
-# 🗞️ TempoApply — AI Job Application Agent
+# 🗞️ TempoApply — Entry-Level Job Search Engine (<2 Yrs Exp)
 
-**Your personal AI-powered job hunting command centre.** Scrapes jobs from LinkedIn, Indeed, Naukri and InstaHyre, scores them for fit using Gemini AI, tailors your LaTeX resume per job, generates cold emails and LinkedIn messages, and manages everything through a beautiful newspaper-themed dashboard.
+**Automated multi-platform job discovery engine.** Scrapes early-career software engineering jobs across LinkedIn, Indeed, Naukri, InstaHyre, and top Indian company career sites, enforcing strict title and experience filters to retain only postings requiring **<2 years of experience**.
 
 ---
 
@@ -9,63 +9,49 @@
 ### Prerequisites
 - Python 3.10+
 - Node.js 18+
-- A Google Gemini API key (free at [aistudio.google.com](https://aistudio.google.com/app/apikey))
 
-### 1. Configure credentials
+### 1. Configure preferences
 
 ```bash
-# Copy the example env file
+# Copy example configuration if needed
 cp config/.env.example config/.env
-# Then edit config/.env with your real credentials
 ```
 
-### 2. Upload your resume
-Put your `.tex` resume file in the `resumes/` folder and name it `base_resume.tex`, **OR** upload it via the dashboard.
-
-### 3. Start the backend API
+### 2. Start Backend API
 
 ```bash
-# Install Python dependencies (already done if you followed setup)
+# Install dependencies
 pip install -r backend/requirements.txt
 python -m playwright install chromium
 
-# Start the API server
+# Start the backend server
 python run.py
 ```
+*API runs at `http://localhost:8000`*
 
-API runs at `http://localhost:8000`
-
-### 4. Start the dashboard
+### 3. Start Dashboard
 
 ```bash
 cd dashboard
 npm install
 npm run dev
 ```
-
-Dashboard at `http://localhost:3000`
+*Dashboard runs at `http://localhost:3000`*
 
 ---
 
 ## 📋 Features
 
-| Feature | Status |
-|---|---|
-| Job scraping — LinkedIn | ✅ |
-| Job scraping — Indeed | ✅ |
-| Job scraping — Naukri | ✅ |
-| Job scraping — InstaHyre | ✅ |
-| AI job scoring (Gemini 1.5 Flash) | ✅ |
-| LaTeX resume tailoring per job | ✅ |
-| ATS keyword optimization | ✅ |
-| Cold email generation | ✅ |
-| LinkedIn message generation | ✅ |
-| Cover letter generation | ✅ |
-| Kanban pipeline dashboard | ✅ |
-| Analytics & charts | ✅ |
-| Settings UI with .env write | ✅ |
-| Manual job add + analysis | ✅ |
-| Auto-apply (Easy Apply) | 🔜 Coming soon |
+| Feature | Description | Status |
+|---|---|---|
+| **Hard Experience Boundary (<2 Yrs)** | Automatically excludes roles requiring >=3+ years of experience | ✅ |
+| **Senior Title Exclusion Filter** | Rejects `Senior`, `Lead`, `Staff`, `Architect`, `Manager`, `SDE-2`, `Level 2+` roles | ✅ |
+| **LinkedIn Job Discovery** | Harvester targeting entry-level software roles | ✅ |
+| **Indeed India Scraper** | Search and details extraction for fresh postings | ✅ |
+| **Naukri.com Scraper** | Public listing harvesting filtered by 0-to-2 years experience | ✅ |
+| **InstaHyre Scraper** | Tech startup opportunity discovery | ✅ |
+| **Direct Company Career Sites** | Greenhouse & Lever API scraper for top Indian tech companies | ✅ |
+| **Clean Real-Time Dashboard** | Filter, search, and track status across platforms | ✅ |
 
 ---
 
@@ -73,55 +59,25 @@ Dashboard at `http://localhost:3000`
 
 ```
 TempoApply/
-├── run.py                  ← Start backend here
+├── run.py                       ← Main backend entrypoint
 ├── backend/
-│   ├── config.py           ← Settings (reads config/.env)
-│   ├── pipeline.py         ← Main orchestrator
-│   ├── ai/
-│   │   ├── analyzer.py     ← Job fit scoring (Gemini)
-│   │   ├── resume_tailor.py← Resume tailoring (Gemini)
-│   │   ├── cold_email.py   ← Email/message/cover letter gen
-│   │   └── latex_parser.py ← .tex → plaintext parser
+│   ├── config.py                ← Application settings (reads config/.env)
+│   ├── pipeline.py              ← Job discovery & deduplication orchestrator
 │   ├── scrapers/
-│   │   ├── linkedin.py     ← LinkedIn scraper
-│   │   ├── indeed.py       ← Indeed scraper
-│   │   ├── naukri.py       ← Naukri scraper
-│   │   └── instahyre.py    ← InstaHyre scraper
-│   ├── db/models.py        ← SQLite models (Job, Application, Resume)
-│   └── api/main.py         ← FastAPI REST API
-├── dashboard/              ← Next.js newspaper-themed UI
+│   │   ├── base.py              ← Standard job schema & browser helpers
+│   │   ├── filter_utils.py      ← Hard experience (<2 yrs) & title filter regexes
+│   │   ├── linkedin.py          ← LinkedIn scraper
+│   │   ├── indeed.py            ← Indeed scraper
+│   │   ├── naukri.py            ← Naukri scraper
+│   │   ├── instahyre.py         ← InstaHyre scraper
+│   │   └── company_careers.py   ← Greenhouse / Lever direct careers scraper
+│   ├── db/models.py             ← SQLite Job database model
+│   └── api/main.py              ← FastAPI REST endpoints
+├── dashboard/                   ← Next.js Dashboard UI
 │   └── app/
-│       ├── page.tsx        ← Pipeline kanban board
-│       ├── outreach/       ← Cold email viewer
-│       ├── resume/         ← Resume upload/management
-│       ├── analytics/      ← Charts & stats
-│       └── settings/       ← Credentials & preferences
-├── resumes/
-│   ├── base_resume.tex     ← YOUR RESUME HERE
-│   └── tailored/           ← AI-tailored versions (auto-generated)
+│       ├── page.tsx             ← Job search & discovery table
+│       ├── analytics/           ← Pipeline analytics & status breakdown
+│       └── settings/            ← Target roles & location preferences
 └── config/
-    └── .env                ← Your secrets (not committed to git)
-```
-
----
-
-## 🎮 How to Use
-
-1. **Open Settings** (`/settings`) → enter your Gemini API key + platform credentials
-2. **Upload Resume** (`/resume`) → drag & drop your `.tex` resume
-3. **Click "Run Scan"** in the sidebar → starts scraping all platforms in background
-4. **View Pipeline** → jobs appear in the Kanban board, colour-coded by score
-5. **Click "Generate AI"** on any card → Gemini tailors your resume + writes outreach
-6. **Open Outreach** (`/outreach`) → select job → copy cold email / LinkedIn message
-
----
-
-## 🔑 Minimum Required Config
-
-```env
-GEMINI_API_KEY=your_key
-LINKEDIN_EMAIL=you@email.com
-LINKEDIN_PASSWORD=yourpassword
-USER_FULL_NAME=Your Name
-TARGET_ROLES=Software Engineer,Backend Engineer
+    └── .env                     ← Environment configuration
 ```

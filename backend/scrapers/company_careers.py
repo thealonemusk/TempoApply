@@ -13,49 +13,18 @@ from loguru import logger
 import requests
 from bs4 import BeautifulSoup
 
-from backend.scrapers.base import normalize_job
-from backend.scrapers.company_list import TOP_COMPANIES
-
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Safari/537.36"
-    ),
-    "Accept": "application/json",
-}
-
-# Jobs posted within this window are considered "fresh"
-FRESHNESS_HOURS = 24
-
-
-def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-def _is_fresh(timestamp_ms: Optional[int] = None, timestamp_str: Optional[str] = None) -> bool:
-    """Check if a job was posted in the last FRESHNESS_HOURS hours."""
-    cutoff = _utc_now() - timedelta(hours=FRESHNESS_HOURS)
-    try:
-        if timestamp_ms is not None:
-            posted = datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc)
-            return posted >= cutoff
-        if timestamp_str:
-            # ISO 8601 / RFC 3339 strings
-            ts = timestamp_str.replace("Z", "+00:00")
-            posted = datetime.fromisoformat(ts)
-            if posted.tzinfo is None:
-                posted = posted.replace(tzinfo=timezone.utc)
-            return posted >= cutoff
-    except Exception:
-        pass
-    # If we can't determine freshness, include it (conservative)
-    return True
+from backend.scrapers.filter_utils import EXCLUDED_TITLE_KEYWORDS
 
 
 def _role_matches(title: str, roles: List[str]) -> bool:
-    """Check if a job title matches any of the target roles."""
+    """Check if a job title matches any of the target roles, excluding senior/lead roles."""
     title_lower = title.lower()
+
+    # Reject if title contains excluded senior/lead/manager keywords
+    for keyword in EXCLUDED_TITLE_KEYWORDS:
+        if keyword in title_lower:
+            return False
+
     for role in roles:
         role_lower = role.lower()
         # Direct substring match
