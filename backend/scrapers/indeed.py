@@ -45,7 +45,7 @@ async def scrape_indeed_jobs(
     Returns list of normalized job dicts.
     """
     roles = roles or settings.target_roles_list
-    locations = ["Remote", "Bengaluru", "Delhi", "Noida", "Pune", "Hyderabad", "Mumbai" , "Gurugram"]
+    locations = ["Bengaluru", "Delhi", "Noida", "Pune", "Hyderabad", "Mumbai" , "Gurugram"]
     all_jobs = []
 
     headers = {
