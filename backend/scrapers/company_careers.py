@@ -14,6 +14,56 @@ import requests
 from bs4 import BeautifulSoup
 
 from backend.scrapers.filter_utils import EXCLUDED_TITLE_KEYWORDS
+from backend.scrapers.base import normalize_job
+from backend.scrapers.company_list import TOP_COMPANIES
+
+HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+}
+
+# Career boards update less often than LinkedIn; keep a 7-day window.
+FRESHNESS_DAYS = 7
+
+# Extra title aliases beyond the pipeline role strings (SDE, fullstack, etc.)
+ROLE_ALIASES = [
+    "software engineer",
+    "software developer",
+    "software development engineer",
+    "backend engineer",
+    "backend developer",
+    "full stack",
+    "fullstack",
+    "ai engineer",
+    "ml engineer",
+    "machine learning engineer",
+    "python developer",
+    "sde",
+]
+
+
+def _is_fresh(timestamp_str: Optional[str] = None, timestamp_ms: Optional[int] = None) -> bool:
+    """Check if job is fresh (posted/updated within FRESHNESS_DAYS)."""
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=FRESHNESS_DAYS)
+    
+    if timestamp_str:
+        try:
+            t_str = timestamp_str.replace("Z", "+00:00")
+            dt = datetime.fromisoformat(t_str)
+            return dt >= cutoff
+        except Exception as e:
+            logger.debug(f"Error parsing timestamp_str {timestamp_str}: {e}")
+            return True
+            
+    if timestamp_ms:
+        try:
+            dt = datetime.fromtimestamp(timestamp_ms / 1000.0, tz=timezone.utc)
+            return dt >= cutoff
+        except Exception as e:
+            logger.debug(f"Error parsing timestamp_ms {timestamp_ms}: {e}")
+            return True
+            
+    return True
 
 
 def _role_matches(title: str, roles: List[str]) -> bool:
@@ -25,14 +75,12 @@ def _role_matches(title: str, roles: List[str]) -> bool:
         if keyword in title_lower:
             return False
 
-    for role in roles:
-        role_lower = role.lower()
-        # Direct substring match
+    needles = [r.lower() for r in roles] + ROLE_ALIASES
+    for role_lower in needles:
         if role_lower in title_lower:
             return True
-        # Partial-word match: each word of role must appear in title
         role_words = role_lower.split()
-        if all(w in title_lower for w in role_words):
+        if len(role_words) > 1 and all(w in title_lower for w in role_words):
             return True
     return False
 
@@ -61,7 +109,7 @@ def _scrape_greenhouse(company: dict, roles: List[str]) -> List[dict]:
     try:
         resp = requests.get(url, headers=HEADERS, timeout=15)
         if resp.status_code != 200:
-            logger.debug(f"Greenhouse {name}: HTTP {resp.status_code}")
+            logger.warning(f"Greenhouse {name}: HTTP {resp.status_code} (bad api_id={api_id}?)")
             return []
 
         data = resp.json()
@@ -121,7 +169,7 @@ def _scrape_lever(company: dict, roles: List[str]) -> List[dict]:
     try:
         resp = requests.get(url, headers=HEADERS, timeout=15)
         if resp.status_code != 200:
-            logger.debug(f"Lever {name}: HTTP {resp.status_code}")
+            logger.warning(f"Lever {name}: HTTP {resp.status_code} (bad api_id={api_id}?)")
             return []
 
         jobs = resp.json()
@@ -253,11 +301,11 @@ def _scrape_custom(company: dict, roles: List[str]) -> List[dict]:
 
 async def scrape_company_career_jobs(
     roles: List[str] = None,
-    max_jobs: int = 50,
+    max_jobs: int = 1000,
     companies: List[dict] = None,
 ) -> List[dict]:
     """
-    Scrape company career sites for matching jobs posted in the last 24 hours.
+    Scrape company career sites for matching jobs posted in the last FRESHNESS_DAYS days.
 
     Args:
         roles: List of target role strings (e.g. ['Software Engineer', 'Backend Engineer'])

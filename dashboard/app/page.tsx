@@ -83,7 +83,7 @@ export default function PipelinePage() {
       await fetch(`${API}/api/scan`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ platforms: ['linkedin', 'indeed', 'naukri', 'instahyre'], max_jobs_per_platform: 25, headless: true })
+        body: JSON.stringify({ platforms: ['linkedin', 'indeed', 'naukri', 'instahyre', 'company_careers'], max_jobs_per_platform: 25, headless: true })
       });
     } catch {
       setScanning(false);

@@ -12,7 +12,7 @@ EXCLUDED_TITLE_KEYWORDS = [
     "senior", "sr.", "sr ", "lead", "staff", "principal", "manager",
     "director", "head", "architect", "sde 2", "sde-2", "sde2", "sde 3", "sde-3",
     "sde3", "sde ii", "sde-ii", "sde iii", "sde-iii", "level 2", "level 3", "l2", "l3", "expert",
-    "vp", "vice president", "chief", "tech lead", "team lead", "experienced",
+    "vp", "vice president", "chief", "tech lead", "team lead", "experienced","QA","test"
     "consultant", "specialist", "5+", "3+", "4+", "6+", "7+", "8+"
 ]
 

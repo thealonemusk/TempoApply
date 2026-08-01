@@ -28,7 +28,7 @@ export default function Sidebar() {
             const res = await fetch('http://localhost:8000/api/scan', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ platforms: ['linkedin', 'indeed', 'naukri', 'instahyre'], max_jobs_per_platform: 20, headless: true }),
+                body: JSON.stringify({ platforms: ['linkedin', 'indeed', 'naukri', 'instahyre', 'company_careers'], max_jobs_per_platform: 20, headless: true }),
             });
             const data = await res.json();
             setScanOk(true);

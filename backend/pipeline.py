@@ -106,56 +106,57 @@ async def run_scan_pipeline(
     logger.info(f"Targeting these dynamic AI roles: {dynamic_roles}")
 
     all_raw_jobs = []
+    tasks = []
+    platform_names = []
 
     if "linkedin" in platforms:
-        try:
+        async def run_linkedin():
             from backend.scrapers.linkedin import scrape_linkedin_jobs
             logger.info("🔍 Scraping LinkedIn...")
-            jobs = await scrape_linkedin_jobs(roles=dynamic_roles, max_jobs=max_jobs_per_platform, headless=headless)
-            all_raw_jobs.extend(jobs)
-            logger.info(f"LinkedIn: {len(jobs)} jobs")
-        except Exception as e:
-            logger.error(f"LinkedIn scraping error: {e}")
+            return await scrape_linkedin_jobs(roles=dynamic_roles, max_jobs=max_jobs_per_platform, headless=headless)
+        tasks.append(run_linkedin())
+        platform_names.append("linkedin")
 
     if "indeed" in platforms:
-        try:
+        async def run_indeed():
             from backend.scrapers.indeed import scrape_indeed_jobs
             logger.info("🔍 Scraping Indeed...")
-            jobs = await scrape_indeed_jobs(roles=dynamic_roles, max_jobs=max_jobs_per_platform, headless=headless)
-            all_raw_jobs.extend(jobs)
-            logger.info(f"Indeed: {len(jobs)} jobs")
-        except Exception as e:
-            logger.error(f"Indeed scraping error: {e}")
+            return await scrape_indeed_jobs(roles=dynamic_roles, max_jobs=max_jobs_per_platform, headless=headless)
+        tasks.append(run_indeed())
+        platform_names.append("indeed")
 
     if "naukri" in platforms:
-        try:
+        async def run_naukri():
             from backend.scrapers.naukri import scrape_naukri_jobs
             logger.info("🔍 Scraping Naukri...")
-            jobs = await scrape_naukri_jobs(roles=dynamic_roles, max_jobs=max_jobs_per_platform, headless=headless)
-            all_raw_jobs.extend(jobs)
-            logger.info(f"Naukri: {len(jobs)} jobs")
-        except Exception as e:
-            logger.error(f"Naukri scraping error: {e}")
+            return await scrape_naukri_jobs(roles=dynamic_roles, max_jobs=max_jobs_per_platform, headless=headless)
+        tasks.append(run_naukri())
+        platform_names.append("naukri")
 
     if "instahyre" in platforms:
-        try:
+        async def run_instahyre():
             from backend.scrapers.instahyre import scrape_instahyre_jobs
             logger.info("🔍 Scraping InstaHyre...")
-            jobs = await scrape_instahyre_jobs(roles=dynamic_roles, max_jobs=max_jobs_per_platform, headless=headless)
-            all_raw_jobs.extend(jobs)
-            logger.info(f"InstaHyre: {len(jobs)} jobs")
-        except Exception as e:
-            logger.error(f"InstaHyre scraping error: {e}")
+            return await scrape_instahyre_jobs(roles=dynamic_roles, max_jobs=max_jobs_per_platform, headless=headless)
+        tasks.append(run_instahyre())
+        platform_names.append("instahyre")
 
     if "company_careers" in platforms:
-        try:
+        async def run_company_careers():
             from backend.scrapers.company_careers import scrape_company_career_jobs
             logger.info("🏢 Scraping top Indian company career sites (Greenhouse / Lever / custom)...")
-            jobs = await scrape_company_career_jobs(roles=dynamic_roles, max_jobs=max_jobs_per_platform)
-            all_raw_jobs.extend(jobs)
-            logger.info(f"Company careers: {len(jobs)} jobs")
-        except Exception as e:
-            logger.error(f"Company careers scraping error: {e}")
+            return await scrape_company_career_jobs(roles=dynamic_roles, max_jobs=1000)
+        tasks.append(run_company_careers())
+        platform_names.append("company_careers")
+
+    if tasks:
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for name, result in zip(platform_names, results):
+            if isinstance(result, Exception):
+                logger.error(f"{name} scraping error: {result}")
+            elif result:
+                all_raw_jobs.extend(result)
+                logger.info(f"{name}: {len(result)} jobs")
 
     logger.info(f"Total raw jobs found: {len(all_raw_jobs)}")
 

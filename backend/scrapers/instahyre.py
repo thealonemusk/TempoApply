@@ -68,9 +68,7 @@ async def scrape_instahyre_jobs(
             await page.wait_for_timeout(6000)
             logger.info("✅ InstaHyre Google login successful")
         except Exception as e:
-            logger.error(f"InstaHyre Google login failed: {e}")
-            await browser.close()
-            return []
+            logger.warning(f"InstaHyre Google login failed (will attempt search anyway): {e}")
 
         for role in roles:
             try:
