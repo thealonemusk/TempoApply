@@ -1,83 +1,69 @@
-# 🗞️ TempoApply — Entry-Level Job Search Engine (<2 Yrs Exp)
+# TempoApply — Entry-Level Job Search Engine
 
-**Automated multi-platform job discovery engine.** Scrapes early-career software engineering jobs across LinkedIn, Indeed, Naukri, InstaHyre, and top Indian company career sites, enforcing strict title and experience filters to retain only postings requiring **<2 years of experience**.
+Automated multi-platform job discovery for early-career software roles. Scrapes LinkedIn, Indeed, Naukri, InstaHyre, and company career sites (Greenhouse, Lever, Workday), with hard filters for experience and senior titles.
 
----
-
-## 🚀 Quick Start
+## Quick start
 
 ### Prerequisites
 - Python 3.10+
 - Node.js 18+
 
-### 1. Configure preferences
+### Backend
 
 ```bash
-# Copy example configuration if needed
-cp config/.env.example config/.env
-```
-
-### 2. Start Backend API
-
-```bash
-# Install dependencies
 pip install -r backend/requirements.txt
 python -m playwright install chromium
-
-# Start the backend server
 python run.py
 ```
-*API runs at `http://localhost:8000`*
 
-### 3. Start Dashboard
+API: `http://localhost:8000`
+
+### Dashboard
 
 ```bash
 cd dashboard
 npm install
 npm run dev
 ```
-*Dashboard runs at `http://localhost:3000`*
 
----
+UI: `http://localhost:3000`
 
-## 📋 Features
+## Platforms
 
-| Feature | Description | Status |
-|---|---|---|
-| **Hard Experience Boundary (<2 Yrs)** | Automatically excludes roles requiring >=3+ years of experience | ✅ |
-| **Senior Title Exclusion Filter** | Rejects `Senior`, `Lead`, `Staff`, `Architect`, `Manager`, `SDE-2`, `Level 2+` roles | ✅ |
-| **LinkedIn Job Discovery** | Harvester targeting entry-level software roles | ✅ |
-| **Indeed India Scraper** | Search and details extraction for fresh postings | ✅ |
-| **Naukri.com Scraper** | Public listing harvesting filtered by 0-to-2 years experience | ✅ |
-| **InstaHyre Scraper** | Tech startup opportunity discovery | ✅ |
-| **Direct Company Career Sites** | Greenhouse & Lever API scraper for top Indian tech companies | ✅ |
-| **Clean Real-Time Dashboard** | Filter, search, and track status across platforms | ✅ |
+Default scan runs: **LinkedIn** and **company_careers** (direct career sites).
 
----
+Optional scrapers (Indeed, Naukri, InstaHyre, Wellfound) remain in the codebase but are not part of the default scan.
 
-## 🏗️ Architecture
+Platform list is defined once in `backend/platforms.py` and exposed via `GET /api/settings`.
+
+## Architecture
 
 ```
 TempoApply/
-├── run.py                       ← Main backend entrypoint
+├── run.py
 ├── backend/
-│   ├── config.py                ← Application settings (reads config/.env)
-│   ├── pipeline.py              ← Job discovery & deduplication orchestrator
+│   ├── platforms.py           # Single source of truth for scan platforms
+│   ├── pipeline.py            # Scan orchestrator + job upsert
 │   ├── scrapers/
-│   │   ├── base.py              ← Standard job schema & browser helpers
-│   │   ├── filter_utils.py      ← Hard experience (<2 yrs) & title filter regexes
-│   │   ├── linkedin.py          ← LinkedIn scraper
-│   │   ├── indeed.py            ← Indeed scraper
-│   │   ├── naukri.py            ← Naukri scraper
-│   │   ├── instahyre.py         ← InstaHyre scraper
-│   │   └── company_careers.py   ← Greenhouse / Lever direct careers scraper
-│   ├── db/models.py             ← SQLite Job database model
-│   └── api/main.py              ← FastAPI REST endpoints
-├── dashboard/                   ← Next.js Dashboard UI
-│   └── app/
-│       ├── page.tsx             ← Job search & discovery table
-│       ├── analytics/           ← Pipeline analytics & status breakdown
-│       └── settings/            ← Target roles & location preferences
-└── config/
-    └── .env                     ← Environment configuration
+│   │   ├── registry.py        # Platform → scraper mapping
+│   │   ├── filter_utils.py    # Experience & title filters
+│   │   ├── linkedin.py
+│   │   ├── indeed.py
+│   │   ├── naukri.py
+│   │   ├── instahyre.py
+│   │   ├── wellfound.py       # Optional (not in default scan)
+│   │   └── company_careers.py # Greenhouse / Lever / Workday
+│   ├── db/models.py
+│   └── api/main.py
+└── dashboard/
+    ├── app/(dashboard)/       # Jobs, Analytics, Settings
+    ├── components/            # Sidebar, JobRow, UI primitives
+    └── lib/                   # api.ts, types, platforms
 ```
+
+## Features
+
+- Hard experience boundary (<2 years) and senior title exclusion
+- Multi-platform parallel scraping via registry
+- Apple-inspired dashboard with light/dark mode
+- Manual job add, status tracking, analytics

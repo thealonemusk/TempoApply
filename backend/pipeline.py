@@ -1,15 +1,16 @@
 """
-Job Pipeline Orchestrator — orchestrates real-time multi-platform job discovery and experience validation.
+Job Pipeline Orchestrator — multi-platform job discovery and experience validation.
 """
 import asyncio
 import json
-from pathlib import Path
 from loguru import logger
 from sqlalchemy.orm import Session
 
 from backend.db.models import Job, SessionLocal
 from backend.scrapers.filter_utils import is_job_experience_valid
+from backend.scrapers.registry import SCRAPER_REGISTRY, SCRAPER_LABELS, resolve_roles
 from backend.config import settings
+from backend.platforms import DEFAULT_SCAN_PLATFORMS
 
 
 def upsert_jobs(jobs: list, db: Session) -> int:
@@ -17,48 +18,55 @@ def upsert_jobs(jobs: list, db: Session) -> int:
     count = 0
     seen_urls = set()
     seen_title_company = set()
-    
-    frontend_keywords = ['frontend', 'front-end', 'front end', 'react', 'angular', 'vue', 'ui developer', 'user interface']
+
+    frontend_keywords = [
+        "frontend", "front-end", "front end", "react", "angular", "vue",
+        "ui developer", "user interface",
+    ]
     max_exp_years = getattr(settings, "experience_years", 2)
-    
+
+    excluded = [c.lower() for c in settings.excluded_companies_list if c.strip()]
+
     for job_data in jobs:
         url = job_data.get("url", "")
         title = job_data.get("title", "")
         company = job_data.get("company", "")
-        
-        # Prevent blanks and intra-batch duplicates by URL
+
+        if excluded and company:
+            company_lower = company.lower()
+            if any(exc in company_lower for exc in excluded):
+                logger.info(f"Skipping excluded company: {company}")
+                continue
+
         if not url or url in seen_urls:
             continue
-            
-        # Filter out frontend roles
+
         if any(keyword in title.lower() for keyword in frontend_keywords):
             logger.info(f"Skipping frontend role: {title}")
             continue
-            
-        # Enforce hard boundaries on experience (<2 yrs) and title keywords
+
         is_valid, reason = is_job_experience_valid(job_data, max_years=max_exp_years)
         if not is_valid:
-            logger.info(f"🛡️ Hard Filter Excluded [{company} - {title}]: {reason}")
+            logger.info(f"Hard filter excluded [{company} - {title}]: {reason}")
             continue
-            
-        # Deduplicate globally by (Title, Company)
+
         tc_key = (title.lower().strip(), company.lower().strip())
         if tc_key in seen_title_company:
             continue
-            
+
         seen_urls.add(url)
         seen_title_company.add(tc_key)
-        
-        # Prevent database duplicates (by URL)
+
         existing_url = db.query(Job).filter(Job.url == url).first()
         if existing_url:
             continue
-            
-        # Prevent database duplicates (by Title + Company)
-        existing_tc = db.query(Job).filter(Job.title.ilike(title), Job.company.ilike(company)).first()
+
+        existing_tc = db.query(Job).filter(
+            Job.title.ilike(title), Job.company.ilike(company)
+        ).first()
         if existing_tc:
             continue
-            
+
         missing_skills = json.dumps(job_data.get("missing_skills", []))
         job = Job(
             title=job_data.get("title", ""),
@@ -91,52 +99,30 @@ async def run_scan_pipeline(
     headless: bool = True,
 ) -> dict:
     """
-    Run the full job discovery pipeline:
-    1. Scrape jobs from selected platforms
-    2. Analyze each job with Gemini
-    3. Store in DB
-    Returns summary stats.
+    Run job discovery: scrape selected platforms, apply filters, store in DB.
     """
-    platforms = platforms or ["linkedin", "wellfound", "company_careers"]
-    base_resume_text = ""  # AI matching is disabled
-
-    # Hardcoded roles per user request, bypassing AI to save quotas
-    dynamic_roles = [
-        'Software Engineer', 'Backend Engineer', 'Full Stack Developer',
-        'AI Engineer', 'Software Developer', 'Platform Engineer',
-        'DevOps Engineer', 'SDE', 'Machine Learning Engineer',
-    ]
-
-    logger.info(f"Targeting these dynamic AI roles: {dynamic_roles}")
+    platforms = platforms or list(DEFAULT_SCAN_PLATFORMS)
+    roles = resolve_roles(settings.target_roles_list)
+    logger.info(f"Targeting roles: {roles}")
 
     all_raw_jobs = []
     tasks = []
     platform_names = []
 
-    if "linkedin" in platforms:
-        async def run_linkedin():
-            from backend.scrapers.linkedin import scrape_linkedin_jobs
-            logger.info("🔍 Scraping LinkedIn...")
-            return await scrape_linkedin_jobs(roles=dynamic_roles, max_jobs=max_jobs_per_platform, headless=headless)
-        tasks.append(run_linkedin())
-        platform_names.append("linkedin")
+    for key in platforms:
+        scrape_fn = SCRAPER_REGISTRY.get(key)
+        if not scrape_fn:
+            logger.warning(f"Unknown platform '{key}' — skipping")
+            continue
 
-    if "wellfound" in platforms:
-        async def run_wellfound():
-            from backend.scrapers.wellfound import scrape_wellfound_jobs
-            logger.info("🔍 Scraping Wellfound...")
-            return await scrape_wellfound_jobs(roles=dynamic_roles, max_jobs=max_jobs_per_platform, headless=headless)
-        tasks.append(run_wellfound())
-        platform_names.append("wellfound")
+        label = SCRAPER_LABELS.get(key, key)
 
+        async def run_one(fn=scrape_fn, name=key, display=label):
+            logger.info(f"Scraping {display}...")
+            return await fn(roles=roles, max_jobs=max_jobs_per_platform, headless=headless)
 
-    if "company_careers" in platforms:
-        async def run_company_careers():
-            from backend.scrapers.company_careers import scrape_company_career_jobs
-            logger.info("🏢 Scraping top Indian company career sites (Greenhouse / Lever / custom)...")
-            return await scrape_company_career_jobs(roles=dynamic_roles, max_jobs=1000)
-        tasks.append(run_company_careers())
-        platform_names.append("company_careers")
+        tasks.append(run_one())
+        platform_names.append(key)
 
     if tasks:
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -149,17 +135,11 @@ async def run_scan_pipeline(
 
     logger.info(f"Total raw jobs found: {len(all_raw_jobs)}")
 
-    # Bypassing AI JD analysis due to quota limits
     analyzed_jobs = []
     for job in all_raw_jobs:
-        # Give a default passing score to save them all
         job["score"] = 100
-        job["fit_reason"] = "Matched via broad search (AI disabled)"
+        job["fit_reason"] = "Matched via broad search"
         analyzed_jobs.append(job)
-
-    # Filter by score (all will pass since score=100)
-    qualified = analyzed_jobs
-    logger.info(f"Adding {len(qualified)} jobs directly to database...")
 
     db = SessionLocal()
     try:
@@ -169,7 +149,7 @@ async def run_scan_pipeline(
 
     return {
         "total_scraped": len(all_raw_jobs),
-        "qualified": len(qualified),
+        "qualified": len(analyzed_jobs),
         "new_in_db": new_count,
         "platforms": platforms,
     }

@@ -3,24 +3,32 @@ FastAPI REST API for TempoApply dashboard.
 """
 import asyncio
 import json
+import sys
 from pathlib import Path
 from typing import List, Optional
 from datetime import datetime
 
-import sys
-import asyncio
-if sys.platform == 'win32':
+if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
-from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, BackgroundTasks, Query
+from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from loguru import logger
 
 from backend.db.models import Job, get_db, init_db
 from backend.config import settings
+from backend.platforms import DEFAULT_SCAN_PLATFORMS, SCAN_PLATFORMS, ALL_PLATFORMS
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+
+
+def _env_path() -> Path:
+    path = PROJECT_ROOT / "config" / ".env"
+    if not path.exists():
+        path = PROJECT_ROOT / ".env"
+    return path
 
 app = FastAPI(title="TempoApply API", version="1.0.0")
 
@@ -67,7 +75,7 @@ class JobOut(BaseModel):
 
 
 class ScanRequest(BaseModel):
-    platforms: List[str] = ["linkedin", "indeed", "naukri", "instahyre", "company_careers"]
+    platforms: List[str] = list(DEFAULT_SCAN_PLATFORMS)
     max_jobs_per_platform: int = 20
     headless: bool = True
 
@@ -254,7 +262,7 @@ def get_analytics(db: Session = Depends(get_db)):
         by_status[status] = db.query(Job).filter(Job.status == status).count()
 
     by_platform = {}
-    for platform in ["linkedin", "indeed", "naukri", "instahyre", "company_careers", "manual"]:
+    for platform in ALL_PLATFORMS:
         by_platform[platform] = db.query(Job).filter(Job.platform == platform).count()
 
     top_companies = (
@@ -282,19 +290,21 @@ def get_settings():
         "preferred_locations": settings.preferred_locations_list,
         "min_relevance_score": settings.min_relevance_score,
         "user_full_name": settings.user_full_name,
+        "excluded_companies": settings.excluded_companies_list,
         "has_gemini_key": bool(settings.gemini_api_key),
         "has_linkedin": bool(settings.linkedin_email),
         "has_naukri": bool(settings.naukri_email),
         "has_indeed": bool(settings.indeed_email),
         "has_instahyre": bool(settings.instahyre_email),
+        "supported_platforms": SCAN_PLATFORMS,
     }
 
 
 @app.post("/api/settings")
 def update_settings(new_settings: dict):
     """Update settings (writes to .env file)."""
-    env_path = Path("config/.env")
-    env_path.parent.mkdir(exist_ok=True)
+    env_path = _env_path()
+    env_path.parent.mkdir(parents=True, exist_ok=True)
 
     existing_lines = []
     if env_path.exists():
@@ -306,6 +316,9 @@ def update_settings(new_settings: dict):
         "PREFERRED_LOCATIONS": ",".join(new_settings.get("preferred_locations", settings.preferred_locations_list)),
         "MIN_RELEVANCE_SCORE": str(new_settings.get("min_relevance_score", settings.min_relevance_score)),
         "USER_FULL_NAME": new_settings.get("user_full_name", settings.user_full_name),
+        "EXCLUDED_COMPANIES": ",".join(
+            new_settings.get("excluded_companies", settings.excluded_companies_list)
+        ),
         "GEMINI_API_KEY": new_settings.get("gemini_api_key", settings.gemini_api_key),
         "LINKEDIN_EMAIL": new_settings.get("linkedin_email", settings.linkedin_email),
         "LINKEDIN_PASSWORD": new_settings.get("linkedin_password", settings.linkedin_password),
