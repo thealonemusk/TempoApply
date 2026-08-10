@@ -13,7 +13,7 @@ from loguru import logger
 import requests
 from bs4 import BeautifulSoup
 
-from backend.scrapers.filter_utils import EXCLUDED_TITLE_KEYWORDS
+from backend.scrapers.filter_utils import EXCLUDED_TITLE_KEYWORDS, INTERN_PATTERN
 from backend.scrapers.base import normalize_job
 from backend.scrapers.company_list import TOP_COMPANIES
 
@@ -21,8 +21,8 @@ HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 }
 
-# Career boards update less often than LinkedIn; keep a 7-day window.
-FRESHNESS_DAYS = 7
+# Career boards update less often than LinkedIn; keep a 14-day window.
+FRESHNESS_DAYS = 14
 
 # Extra title aliases beyond the pipeline role strings (SDE, fullstack, etc.)
 ROLE_ALIASES = [
@@ -33,11 +33,22 @@ ROLE_ALIASES = [
     "backend developer",
     "full stack",
     "fullstack",
+    "full-stack",
     "ai engineer",
     "ml engineer",
     "machine learning engineer",
     "python developer",
+    "java developer",
+    "golang developer",
+    "go developer",
+    "platform engineer",
+    "devops engineer",
+    "sre",
+    "site reliability",
     "sde",
+    "new grad",
+    "university graduate",
+    "graduate engineer",
 ]
 
 
@@ -67,8 +78,11 @@ def _is_fresh(timestamp_str: Optional[str] = None, timestamp_ms: Optional[int] =
 
 
 def _role_matches(title: str, roles: List[str]) -> bool:
-    """Check if a job title matches any of the target roles, excluding senior/lead roles."""
+    """Check if a job title matches any of the target roles, excluding senior/lead/intern roles."""
     title_lower = title.lower()
+
+    if INTERN_PATTERN.search(title):
+        return False
 
     # Reject if title contains excluded senior/lead/manager keywords
     for keyword in EXCLUDED_TITLE_KEYWORDS:
@@ -226,7 +240,124 @@ def _scrape_lever(company: dict, roles: List[str]) -> List[dict]:
     return results
 
 
+# ─── Workday ────────────────────────────────────────────────────────────────
+
+def _scrape_workday(company: dict, roles: List[str]) -> List[dict]:
+    """
+    Query Workday public JSON API:
+    POST https://{tenant}.{wd}.myworkdayjobs.com/wday/cxs/{tenant}/{api_id}/jobs
+    Returns normalized job dicts.
+    """
+    tenant = company.get("tenant")
+    api_id = company.get("api_id")
+    name = company["name"]
+    loc_filter = company.get("location_filter", [])
+    results = []
+
+    if not tenant or not api_id:
+        logger.warning(f"Workday {name}: Missing tenant or api_id")
+        return []
+
+    # Prefer explicit wd host (wd1/wd5/...); else try common variants
+    wd_hint = company.get("wd")  # e.g. "wd5"
+    host_candidates = []
+    if wd_hint:
+        host_candidates.append(f"{tenant}.{wd_hint}.myworkdayjobs.com")
+    host_candidates.extend([
+        f"{tenant}.myworkdayjobs.com",
+        f"{tenant}.wd5.myworkdayjobs.com",
+        f"{tenant}.wd1.myworkdayjobs.com",
+        f"{tenant}.wd3.myworkdayjobs.com",
+    ])
+    # dedupe preserve order
+    seen_hosts = set()
+    hosts = []
+    for h in host_candidates:
+        if h not in seen_hosts:
+            seen_hosts.add(h)
+            hosts.append(h)
+
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+    }
+
+    working_host = None
+    for role in roles:
+        payload = {
+            "appliedFacets": {},
+            "limit": 50,
+            "offset": 0,
+            "searchText": role
+        }
+        try:
+            data = None
+            host_used = working_host
+            if host_used:
+                url = f"https://{host_used}/wday/cxs/{tenant}/{api_id}/jobs"
+                resp = requests.post(url, headers=headers, json=payload, timeout=15)
+                if resp.status_code == 200:
+                    data = resp.json()
+                else:
+                    working_host = None
+                    host_used = None
+
+            if data is None:
+                for host in hosts:
+                    url = f"https://{host}/wday/cxs/{tenant}/{api_id}/jobs"
+                    resp = requests.post(url, headers=headers, json=payload, timeout=12)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        working_host = host
+                        host_used = host
+                        break
+
+            if data is None:
+                logger.warning(f"Workday {name}: HTTP failure for role {role}")
+                continue
+
+            postings = data.get("jobPostings", [])
+            logger.info(f"Workday {name} ({role}): {len(postings)} postings found")
+
+            for posting in postings:
+                title = posting.get("title", "")
+                if not _role_matches(title, [role]):
+                    continue
+
+                location = posting.get("locationsText", "")
+                if not _location_matches(location, loc_filter):
+                    continue
+
+                # Check freshness
+                posted_on = posting.get("postedOn", "").lower()
+                if "30+" in posted_on or "month" in posted_on:
+                    continue
+
+                external_path = posting.get("externalPath", "")
+                if not external_path:
+                    continue
+
+                base_host = host_used or hosts[0]
+                job_url = f"https://{base_host}/{api_id}{external_path}"
+
+                results.append(normalize_job({
+                    "title": title,
+                    "company": name,
+                    "location": location,
+                    "url": job_url,
+                    "jd_text": "",
+                    "easy_apply": False,
+                }, "company_careers"))
+
+        except Exception as e:
+            logger.warning(f"Workday {name} ({role}): {e}")
+
+    return results
+
+
 # ─── Custom HTML Scrape ──────────────────────────────────────────────────────
+
 
 def _scrape_custom(company: dict, roles: List[str]) -> List[dict]:
     """
@@ -333,6 +464,8 @@ async def scrape_company_career_jobs(
                 return await asyncio.to_thread(_scrape_greenhouse, company, roles)
             elif ctype == "lever":
                 return await asyncio.to_thread(_scrape_lever, company, roles)
+            elif ctype == "workday":
+                return await asyncio.to_thread(_scrape_workday, company, roles)
             elif ctype == "custom":
                 return await asyncio.to_thread(_scrape_custom, company, roles)
             else:
@@ -343,7 +476,7 @@ async def scrape_company_career_jobs(
             return []
 
     # Run all companies concurrently (with a semaphore to avoid hammering servers)
-    semaphore = asyncio.Semaphore(8)  # max 8 concurrent requests
+    semaphore = asyncio.Semaphore(12)  # max 12 concurrent requests
 
     async def rate_limited_scrape(company: dict) -> List[dict]:
         async with semaphore:

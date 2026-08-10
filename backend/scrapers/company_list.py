@@ -15,10 +15,96 @@ Board IDs verified against live APIs (404 / wrong-company entries removed).
 INDIA_LOCS = [
     "india", "bangalore", "bengaluru", "hyderabad", "pune", "mumbai",
     "delhi", "noida", "gurgaon", "gurugram", "chennai", "remote - india",
+    "kolkata", "ahmedabad", "jaipur", "coimbatore", "kochi", "trivandrum",
+    "thiruvananthapuram", "indore", "chandigarh", "remote, india", "in - ",
 ]
 
 TOP_COMPANIES = [
     # ──────────────────── Greenhouse ATS (verified) ─────────────────────
+    {
+        "name": "Urban Company",
+        "type": "greenhouse",
+        "api_id": "urbancompany",
+        "location_filter": INDIA_LOCS,
+    },
+    {
+        "name": "Yellow.ai",
+        "type": "greenhouse",
+        "api_id": "yellowai",
+        "location_filter": INDIA_LOCS,
+    },
+    {
+        "name": "Darwinbox",
+        "type": "greenhouse",
+        "api_id": "darwinbox",
+        "location_filter": INDIA_LOCS,
+    },
+    {
+        "name": "BrowserStack",
+        "type": "greenhouse",
+        "api_id": "browserstack",
+        "location_filter": INDIA_LOCS,
+    },
+    {
+        "name": "Gojek",
+        "type": "greenhouse",
+        "api_id": "gojek",
+        "location_filter": INDIA_LOCS,
+    },
+    {
+        "name": "Capillary Technologies",
+        "type": "greenhouse",
+        "api_id": "capillarytech",
+        "location_filter": INDIA_LOCS,
+    },
+    {
+        "name": "Keka",
+        "type": "greenhouse",
+        "api_id": "keka",
+        "location_filter": INDIA_LOCS,
+    },
+    {
+        "name": "Shadowfax",
+        "type": "greenhouse",
+        "api_id": "shadowfax",
+        "location_filter": INDIA_LOCS,
+    },
+    {
+        "name": "Signzy",
+        "type": "greenhouse",
+        "api_id": "signzy",
+        "location_filter": INDIA_LOCS,
+    },
+    {
+        "name": "Observe.AI",
+        "type": "greenhouse",
+        "api_id": "observeai",
+        "location_filter": INDIA_LOCS,
+    },
+    {
+        "name": "Whatfix",
+        "type": "greenhouse",
+        "api_id": "whatfix",
+        "location_filter": INDIA_LOCS,
+    },
+    {
+        "name": "Innovaccer",
+        "type": "greenhouse",
+        "api_id": "innovaccer",
+        "location_filter": INDIA_LOCS,
+    },
+    {
+        "name": "Hevo Data",
+        "type": "greenhouse",
+        "api_id": "hevodata",
+        "location_filter": INDIA_LOCS,
+    },
+    {
+        "name": "Harness",
+        "type": "greenhouse",
+        "api_id": "harness",
+        "location_filter": INDIA_LOCS,
+    },
     {
         "name": "Groww",
         "type": "greenhouse",
@@ -307,6 +393,42 @@ TOP_COMPANIES = [
         "api_id": "launchdarkly",
         "location_filter": INDIA_LOCS,
     },
+    {
+        "name": "Grafana Labs",
+        "type": "greenhouse",
+        "api_id": "grafanalabs",
+        "location_filter": INDIA_LOCS,
+    },
+    {
+        "name": "Smartsheet",
+        "type": "greenhouse",
+        "api_id": "smartsheet",
+        "location_filter": INDIA_LOCS,
+    },
+    {
+        "name": "New Relic",
+        "type": "greenhouse",
+        "api_id": "newrelic",
+        "location_filter": INDIA_LOCS,
+    },
+    {
+        "name": "Coursera",
+        "type": "greenhouse",
+        "api_id": "coursera",
+        "location_filter": INDIA_LOCS,
+    },
+    {
+        "name": "Vercel",
+        "type": "greenhouse",
+        "api_id": "vercel",
+        "location_filter": INDIA_LOCS,
+    },
+    {
+        "name": "Scale AI",
+        "type": "greenhouse",
+        "api_id": "scaleai",
+        "location_filter": INDIA_LOCS,
+    },
 
     # ──────────────────── Lever ATS (verified) ─────────────────────
     {
@@ -384,17 +506,84 @@ TOP_COMPANIES = [
         "location_filter": INDIA_LOCS,
     },
 
+    # ──────────────────── Workday ATS (verified) ─────────────────────
+    {
+        "name": "Accenture India",
+        "type": "workday",
+        "tenant": "accenture",
+        "api_id": "Accenture_Careers",
+        "location_filter": INDIA_LOCS,
+    },
+    {
+        "name": "Adobe India",
+        "type": "workday",
+        "tenant": "adobe",
+        "api_id": "Adobe_Careers",
+        "location_filter": INDIA_LOCS,
+    },
+    {
+        "name": "Salesforce",
+        "type": "workday",
+        "tenant": "salesforce",
+        "api_id": "External_Career_Site",
+        "location_filter": INDIA_LOCS,
+    },
+    {
+        "name": "Sprinklr",
+        "type": "workday",
+        "tenant": "sprinklr",
+        "api_id": "Sprinklr",
+        "location_filter": INDIA_LOCS,
+    },
+    {
+        "name": "Cisco",
+        "type": "workday",
+        "tenant": "cisco",
+        "api_id": "Cisco_Careers",
+        "wd": "wd5",
+        "location_filter": INDIA_LOCS,
+    },
+    {
+        "name": "NVIDIA",
+        "type": "workday",
+        "tenant": "nvidia",
+        "api_id": "NVIDIAExternalCareerSite",
+        "wd": "wd5",
+        "location_filter": INDIA_LOCS,
+    },
+    {
+        "name": "PayPal",
+        "type": "workday",
+        "tenant": "paypal",
+        "api_id": "jobs",
+        "wd": "wd1",
+        "location_filter": INDIA_LOCS,
+    },
+    {
+        "name": "Intel",
+        "type": "workday",
+        "tenant": "intel",
+        "api_id": "External",
+        "wd": "wd1",
+        "location_filter": INDIA_LOCS,
+    },
+
+    {
+        "name": "Meesho",
+        "type": "lever",
+        "api_id": "meesho",
+        "location_filter": INDIA_LOCS,
+    },
+
     # ──────────────────── Skip (JS-heavy / anti-scrape) ─────────────────────
     {"name": "TCS", "type": "skip", "reason": "iXP portal requires login"},
-    {"name": "Accenture India", "type": "skip", "reason": "Workday — JS-heavy"},
     {"name": "Amazon India", "type": "skip", "reason": "use LinkedIn/Naukri instead"},
     {"name": "Microsoft India", "type": "skip", "reason": "use LinkedIn/Naukri instead"},
     {"name": "IBM India", "type": "skip", "reason": "Kenexa portal — too complex"},
     {"name": "SAP India", "type": "skip", "reason": "SAP SuccessFactors — too complex"},
     {"name": "Oracle India", "type": "skip", "reason": "Oracle HCM — login required"},
-    {"name": "Adobe India", "type": "skip", "reason": "Workday — JS-heavy"},
     {"name": "Swiggy", "type": "skip", "reason": "Greenhouse board slug retired"},
     {"name": "Razorpay", "type": "skip", "reason": "Greenhouse board slug retired"},
     {"name": "CRED", "type": "skip", "reason": "Greenhouse board slug retired"},
-    {"name": "Meesho", "type": "skip", "reason": "Greenhouse board slug retired"},
 ]
+

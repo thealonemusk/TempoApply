@@ -97,11 +97,15 @@ async def run_scan_pipeline(
     3. Store in DB
     Returns summary stats.
     """
-    platforms = platforms or ["linkedin", "naukri", "indeed", "instahyre", "company_careers"]
+    platforms = platforms or ["linkedin", "wellfound", "company_careers"]
     base_resume_text = ""  # AI matching is disabled
 
     # Hardcoded roles per user request, bypassing AI to save quotas
-    dynamic_roles = ['Software Engineer', 'Backend Engineer', 'Full Stack Developer', 'AI Engineer' , 'Software Developer']
+    dynamic_roles = [
+        'Software Engineer', 'Backend Engineer', 'Full Stack Developer',
+        'AI Engineer', 'Software Developer', 'Platform Engineer',
+        'DevOps Engineer', 'SDE', 'Machine Learning Engineer',
+    ]
 
     logger.info(f"Targeting these dynamic AI roles: {dynamic_roles}")
 
@@ -117,29 +121,14 @@ async def run_scan_pipeline(
         tasks.append(run_linkedin())
         platform_names.append("linkedin")
 
-    if "indeed" in platforms:
-        async def run_indeed():
-            from backend.scrapers.indeed import scrape_indeed_jobs
-            logger.info("🔍 Scraping Indeed...")
-            return await scrape_indeed_jobs(roles=dynamic_roles, max_jobs=max_jobs_per_platform, headless=headless)
-        tasks.append(run_indeed())
-        platform_names.append("indeed")
+    if "wellfound" in platforms:
+        async def run_wellfound():
+            from backend.scrapers.wellfound import scrape_wellfound_jobs
+            logger.info("🔍 Scraping Wellfound...")
+            return await scrape_wellfound_jobs(roles=dynamic_roles, max_jobs=max_jobs_per_platform, headless=headless)
+        tasks.append(run_wellfound())
+        platform_names.append("wellfound")
 
-    if "naukri" in platforms:
-        async def run_naukri():
-            from backend.scrapers.naukri import scrape_naukri_jobs
-            logger.info("🔍 Scraping Naukri...")
-            return await scrape_naukri_jobs(roles=dynamic_roles, max_jobs=max_jobs_per_platform, headless=headless)
-        tasks.append(run_naukri())
-        platform_names.append("naukri")
-
-    if "instahyre" in platforms:
-        async def run_instahyre():
-            from backend.scrapers.instahyre import scrape_instahyre_jobs
-            logger.info("🔍 Scraping InstaHyre...")
-            return await scrape_instahyre_jobs(roles=dynamic_roles, max_jobs=max_jobs_per_platform, headless=headless)
-        tasks.append(run_instahyre())
-        platform_names.append("instahyre")
 
     if "company_careers" in platforms:
         async def run_company_careers():

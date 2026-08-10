@@ -22,6 +22,9 @@ EXCLUDED_TITLE_REGEXES = [
     r'[-_\s](?:2|3|4|5)\b',         # Numbers 2, 3, 4 after space/dash (e.g. "Software Engineer - 2", "Developer 2")
 ]
 
+# Word-boundary so "internal" / "international" are not excluded
+INTERN_PATTERN = re.compile(r'\bintern(?:s|ship)?\b', re.IGNORECASE)
+
 def parse_experience_years(text: str) -> Optional[Tuple[float, float]]:
     """
     Extract (min_years, max_years) from text snippets like:
@@ -72,6 +75,11 @@ def is_job_experience_valid(job_data: dict, max_years: float = 2.0) -> Tuple[boo
     """
     title = job_data.get("title", "").strip()
     title_lower = title.lower()
+    jd_text = job_data.get("jd_text", "").strip()
+
+    # 0. Drop intern / internship titles (word-boundary; "internal" is fine)
+    if title and INTERN_PATTERN.search(title):
+        return False, f"Title mentions intern/internship: '{title}'"
 
     # 1. Title Keyword & Regex Exclusion Check
     for keyword in EXCLUDED_TITLE_KEYWORDS:
@@ -96,7 +104,6 @@ def is_job_experience_valid(job_data: dict, max_years: float = 2.0) -> Tuple[boo
                 return False, f"Experience field required ({exp_str}) min years >= 3.0"
 
     # 3. Job Description Text Scan for explicit hard experience requirements
-    jd_text = job_data.get("jd_text", "").strip()
     if jd_text:
         # Search for patterns like "3+ years of experience", "minimum 3 years", "4-6 years of experience"
         jd_exp_matches = re.finditer(
