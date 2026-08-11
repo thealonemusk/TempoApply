@@ -18,7 +18,7 @@ EXCLUDED_TITLE_KEYWORDS = [
 # Patterns in job titles indicating level II/III or 2/3 (non-entry)
 EXCLUDED_TITLE_REGEXES = [
     r'\b(?:ii|iii|iv|v)\b',
-    r'[-_\s](?:2|3|4|5)\b',
+    r'(?<!\d)[-_\s](?:2|3|4|5)(?!(?:\s*\+|\s*(?:years?|yrs?|yr|y)\b))',
 ]
 
 # Hard cap: no JD or listing may ask for more than 2 years of experience.
@@ -46,7 +46,7 @@ def parse_experience_years(text: str) -> Optional[Tuple[float, float]]:
     clean_text = text.lower().strip()
 
     range_match = re.search(
-        r'(\d+(?:\.\d+)?)\s*(?:-|to|–|—)\s*(\d+(?:\.\d+)?)\s*(?:years?|yrs?|yr|y)?',
+        r'(\d+(?:\.\d+)?)\s*(?:-|to|–|—)\s*(\d+(?:\.\d+)?)\s*(?:years?|yrs?|yr|y)\b',
         clean_text,
     )
     if range_match:
@@ -98,6 +98,15 @@ def is_job_experience_valid(job_data: dict, max_years: float = MAX_JD_EXPERIENCE
     for pattern in EXCLUDED_TITLE_REGEXES:
         if re.search(pattern, title_lower):
             return False, f"Title matches excluded level pattern: '{pattern}' in '{title}'"
+
+    title_exp = parse_experience_years(title)
+    if title_exp:
+        min_y, max_y = title_exp
+        if _experience_exceeds_cap(min_y, max_y, cap):
+            return False, (
+                f"Title requires more than {cap} years of experience "
+                f"(parsed {min_y}-{max_y}): '{title}'"
+            )
 
     exp_str = job_data.get("experience_required", "").strip()
     if exp_str:
