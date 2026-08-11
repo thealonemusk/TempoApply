@@ -429,6 +429,84 @@ TOP_COMPANIES = [
         "api_id": "scaleai",
         "location_filter": INDIA_LOCS,
     },
+    {
+        "name": "Sigmoid",
+        "type": "greenhouse",
+        "api_id": "sigmoid",
+        "location_filter": INDIA_LOCS,
+    },
+    {
+        "name": "Zscaler",
+        "type": "greenhouse",
+        "api_id": "zscaler",
+        "location_filter": INDIA_LOCS,
+    },
+    {
+        "name": "Cockroach Labs",
+        "type": "greenhouse",
+        "api_id": "cockroachlabs",
+        "location_filter": INDIA_LOCS,
+    },
+    {
+        "name": "Agoda",
+        "type": "greenhouse",
+        "api_id": "agoda",
+        "location_filter": INDIA_LOCS,
+    },
+    {
+        "name": "DoorDash",
+        "type": "greenhouse",
+        "api_id": "doordashusa",
+        "location_filter": INDIA_LOCS,
+    },
+    {
+        "name": "Airtable",
+        "type": "greenhouse",
+        "api_id": "airtable",
+        "location_filter": INDIA_LOCS,
+    },
+    {
+        "name": "Tripadvisor",
+        "type": "greenhouse",
+        "api_id": "tripadvisor",
+        "location_filter": INDIA_LOCS,
+    },
+    {
+        "name": "Chime",
+        "type": "greenhouse",
+        "api_id": "chime",
+        "location_filter": INDIA_LOCS,
+    },
+    {
+        "name": "SoFi",
+        "type": "greenhouse",
+        "api_id": "sofi",
+        "location_filter": INDIA_LOCS,
+    },
+    {
+        "name": "Gemini",
+        "type": "greenhouse",
+        "api_id": "gemini",
+        "location_filter": INDIA_LOCS,
+    },
+    {
+        "name": "Ripple",
+        "type": "greenhouse",
+        "api_id": "ripple",
+        "location_filter": INDIA_LOCS,
+    },
+    {
+        "name": "Monzo",
+        "type": "greenhouse",
+        "api_id": "monzo",
+        "location_filter": INDIA_LOCS,
+    },
+    {
+        "name": "Fastly",
+        "type": "greenhouse",
+        "api_id": "fastly",
+        "location_filter": INDIA_LOCS,
+    },
 
     # ──────────────────── Lever ATS (verified) ─────────────────────
     {
@@ -441,6 +519,18 @@ TOP_COMPANIES = [
         "name": "Palantir",
         "type": "lever",
         "api_id": "palantir",
+        "location_filter": INDIA_LOCS,
+    },
+    {
+        "name": "CRED",
+        "type": "lever",
+        "api_id": "cred",
+        "location_filter": INDIA_LOCS,
+    },
+    {
+        "name": "Meesho",
+        "type": "lever",
+        "api_id": "meesho",
         "location_filter": INDIA_LOCS,
     },
 
@@ -571,11 +661,28 @@ TOP_COMPANIES = [
         "wd": "wd1",
         "location_filter": INDIA_LOCS,
     },
-
     {
-        "name": "Meesho",
-        "type": "lever",
-        "api_id": "meesho",
+        "name": "Autodesk",
+        "type": "workday",
+        "tenant": "autodesk",
+        "api_id": "Ext",
+        "wd": "wd1",
+        "location_filter": INDIA_LOCS,
+    },
+    {
+        "name": "Micron",
+        "type": "workday",
+        "tenant": "micron",
+        "api_id": "External",
+        "wd": "wd1",
+        "location_filter": INDIA_LOCS,
+    },
+    {
+        "name": "Motorola Solutions",
+        "type": "workday",
+        "tenant": "motorolasolutions",
+        "api_id": "careers",
+        "wd": "wd5",
         "location_filter": INDIA_LOCS,
     },
 
@@ -587,7 +694,6 @@ TOP_COMPANIES = [
     {"name": "SAP India", "type": "skip", "reason": "SAP SuccessFactors — too complex"},
     {"name": "Oracle India", "type": "skip", "reason": "Oracle HCM — login required"},
     {"name": "Swiggy", "type": "skip", "reason": "Greenhouse board slug retired"},
-    {"name": "Razorpay", "type": "skip", "reason": "Greenhouse board slug retired"},
-    {"name": "CRED", "type": "skip", "reason": "Greenhouse board slug retired"},
+    {"name": "Razorpay", "type": "skip", "reason": "no public Greenhouse/Lever board"},
 ]
 
