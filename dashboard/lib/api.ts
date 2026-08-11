@@ -16,7 +16,7 @@ export const api = {
 
   getScanStatus: () => request<ScanStatus>('/api/scan/status'),
 
-  startScan: (platforms = DEFAULT_SCAN_PLATFORMS, maxJobs = 25) =>
+  startScan: (platforms = DEFAULT_SCAN_PLATFORMS, maxJobs = 40) =>
     request<{ message: string }>('/api/scan', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

@@ -21,8 +21,8 @@ HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 }
 
-# Career boards update less often than LinkedIn; keep a 14-day window.
-FRESHNESS_DAYS = 14
+# Career boards update less often than LinkedIn; keep a 21-day window.
+FRESHNESS_DAYS = 21
 
 # Extra title aliases beyond the pipeline role strings (SDE, fullstack, etc.)
 ROLE_ALIASES = [
@@ -242,10 +242,47 @@ def _scrape_lever(company: dict, roles: List[str]) -> List[dict]:
 
 # ─── Workday ────────────────────────────────────────────────────────────────
 
+WORKDAY_WD_SHARDS = ["wd1", "wd3", "wd5", "wd12", "wd103"]
+WORKDAY_PAGE_SIZE = 20  # API returns HTTP 400 above ~20 for most tenants
+WORKDAY_MAX_PAGES = 3
+
+
+def _workday_host_candidates(tenant: str, wd_hint: Optional[str] = None) -> List[str]:
+    """Build host list. Never use bare {tenant}.myworkdayjobs.com — it often does not resolve."""
+    hosts: List[str] = []
+    if wd_hint:
+        hosts.append(f"{tenant}.{wd_hint}.myworkdayjobs.com")
+    for wd in WORKDAY_WD_SHARDS:
+        host = f"{tenant}.{wd}.myworkdayjobs.com"
+        if host not in hosts:
+            hosts.append(host)
+    return hosts
+
+
+def _resolve_workday_host(
+    tenant: str,
+    api_id: str,
+    hosts: List[str],
+    headers: dict,
+    search_text: str = "Software Engineer",
+) -> Optional[str]:
+    payload = {"appliedFacets": {}, "limit": 1, "offset": 0, "searchText": search_text}
+    for host in hosts:
+        url = f"https://{host}/wday/cxs/{tenant}/{api_id}/jobs"
+        try:
+            resp = requests.post(url, headers=headers, json=payload, timeout=15)
+            if resp.status_code == 200:
+                logger.debug(f"Workday host resolved: {host}")
+                return host
+        except requests.RequestException as exc:
+            logger.debug(f"Workday host probe failed for {host}: {exc}")
+    return None
+
+
 def _scrape_workday(company: dict, roles: List[str]) -> List[dict]:
     """
     Query Workday public JSON API:
-    POST https://{tenant}.{wd}.myworkdayjobs.com/wday/cxs/{tenant}/{api_id}/jobs
+    POST https://{tenant}.{wdN}.myworkdayjobs.com/wday/cxs/{tenant}/{api_id}/jobs
     Returns normalized job dicts.
     """
     tenant = company.get("tenant")
@@ -253,71 +290,45 @@ def _scrape_workday(company: dict, roles: List[str]) -> List[dict]:
     name = company["name"]
     loc_filter = company.get("location_filter", [])
     results = []
+    seen_urls: set = set()
 
     if not tenant or not api_id:
         logger.warning(f"Workday {name}: Missing tenant or api_id")
         return []
 
-    # Prefer explicit wd host (wd1/wd5/...); else try common variants
-    wd_hint = company.get("wd")  # e.g. "wd5"
-    host_candidates = []
-    if wd_hint:
-        host_candidates.append(f"{tenant}.{wd_hint}.myworkdayjobs.com")
-    host_candidates.extend([
-        f"{tenant}.myworkdayjobs.com",
-        f"{tenant}.wd5.myworkdayjobs.com",
-        f"{tenant}.wd1.myworkdayjobs.com",
-        f"{tenant}.wd3.myworkdayjobs.com",
-    ])
-    # dedupe preserve order
-    seen_hosts = set()
-    hosts = []
-    for h in host_candidates:
-        if h not in seen_hosts:
-            seen_hosts.add(h)
-            hosts.append(h)
-
+    hosts = _workday_host_candidates(tenant, company.get("wd"))
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Content-Type': 'application/json',
-        'Accept': 'application/json'
+        "User-Agent": HEADERS["User-Agent"],
+        "Content-Type": "application/json",
+        "Accept": "application/json",
     }
 
-    working_host = None
+    working_host = _resolve_workday_host(tenant, api_id, hosts, headers, roles[0] if roles else "")
+    if not working_host:
+        logger.warning(f"Workday {name}: Could not resolve host for tenant={tenant} api_id={api_id}")
+        return []
+
     for role in roles:
-        payload = {
-            "appliedFacets": {},
-            "limit": 50,
-            "offset": 0,
-            "searchText": role
-        }
         try:
-            data = None
-            host_used = working_host
-            if host_used:
-                url = f"https://{host_used}/wday/cxs/{tenant}/{api_id}/jobs"
+            url = f"https://{working_host}/wday/cxs/{tenant}/{api_id}/jobs"
+            postings: List[dict] = []
+            for page in range(WORKDAY_MAX_PAGES):
+                payload = {
+                    "appliedFacets": {},
+                    "limit": WORKDAY_PAGE_SIZE,
+                    "offset": page * WORKDAY_PAGE_SIZE,
+                    "searchText": role,
+                }
                 resp = requests.post(url, headers=headers, json=payload, timeout=15)
-                if resp.status_code == 200:
-                    data = resp.json()
-                else:
-                    working_host = None
-                    host_used = None
+                if resp.status_code != 200:
+                    if page == 0:
+                        logger.warning(f"Workday {name} ({role}): HTTP {resp.status_code}")
+                    break
+                batch = resp.json().get("jobPostings", [])
+                postings.extend(batch)
+                if len(batch) < WORKDAY_PAGE_SIZE:
+                    break
 
-            if data is None:
-                for host in hosts:
-                    url = f"https://{host}/wday/cxs/{tenant}/{api_id}/jobs"
-                    resp = requests.post(url, headers=headers, json=payload, timeout=12)
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        working_host = host
-                        host_used = host
-                        break
-
-            if data is None:
-                logger.warning(f"Workday {name}: HTTP failure for role {role}")
-                continue
-
-            postings = data.get("jobPostings", [])
             logger.info(f"Workday {name} ({role}): {len(postings)} postings found")
 
             for posting in postings:
@@ -329,7 +340,6 @@ def _scrape_workday(company: dict, roles: List[str]) -> List[dict]:
                 if not _location_matches(location, loc_filter):
                     continue
 
-                # Check freshness
                 posted_on = posting.get("postedOn", "").lower()
                 if "30+" in posted_on or "month" in posted_on:
                     continue
@@ -338,8 +348,10 @@ def _scrape_workday(company: dict, roles: List[str]) -> List[dict]:
                 if not external_path:
                     continue
 
-                base_host = host_used or hosts[0]
-                job_url = f"https://{base_host}/{api_id}{external_path}"
+                job_url = f"https://{working_host}/{api_id}{external_path}"
+                if job_url in seen_urls:
+                    continue
+                seen_urls.add(job_url)
 
                 results.append(normalize_job({
                     "title": title,

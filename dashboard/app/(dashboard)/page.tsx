@@ -21,6 +21,7 @@ export default function JobsPage() {
   const [search, setSearch] = useState('');
   const [filterPlatform, setFilterPlatform] = useState('');
   const [sortOrder, setSortOrder] = useState<'desc' | 'asc'>('desc');
+  const [sortBy, setSortBy] = useState<'score' | 'date'>('score');
   const [currentPage, setCurrentPage] = useState(1);
   const [addOpen, setAddOpen] = useState(false);
   const [manualForm, setManualForm] = useState({
@@ -104,16 +105,20 @@ export default function JobsPage() {
 
   const sorted = useMemo(() => {
     return [...filtered].sort((a, b) => {
+      if (sortBy === 'score') {
+        const diff = (b.relevance_score || 0) - (a.relevance_score || 0);
+        if (diff !== 0) return sortOrder === 'desc' ? diff : -diff;
+      }
       const tA = a.discovered_at ? new Date(a.discovered_at).getTime() : 0;
       const tB = b.discovered_at ? new Date(b.discovered_at).getTime() : 0;
       return sortOrder === 'desc' ? tB - tA : tA - tB;
     });
-  }, [filtered, sortOrder]);
+  }, [filtered, sortOrder, sortBy]);
 
   const totalPages = Math.max(1, Math.ceil(sorted.length / JOBS_PER_PAGE));
   const pageJobs = sorted.slice((currentPage - 1) * JOBS_PER_PAGE, currentPage * JOBS_PER_PAGE);
 
-  useEffect(() => setCurrentPage(1), [search, filterPlatform, sortOrder]);
+  useEffect(() => setCurrentPage(1), [search, filterPlatform, sortOrder, sortBy]);
 
   const platformChips = useMemo(() => {
     const fromJobs = jobs.map((j) => j.platform);
@@ -158,12 +163,20 @@ export default function JobsPage() {
               />
             </div>
             <select
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value as 'score' | 'date')}
+              className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5 text-sm text-[var(--text-secondary)] outline-none"
+            >
+              <option value="score">Best match</option>
+              <option value="date">Date</option>
+            </select>
+            <select
               value={sortOrder}
               onChange={(e) => setSortOrder(e.target.value as 'desc' | 'asc')}
               className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5 text-sm text-[var(--text-secondary)] outline-none"
             >
-              <option value="desc">Newest</option>
-              <option value="asc">Oldest</option>
+              <option value="desc">{sortBy === 'score' ? 'Highest score' : 'Newest'}</option>
+              <option value="asc">{sortBy === 'score' ? 'Lowest score' : 'Oldest'}</option>
             </select>
           </div>
 

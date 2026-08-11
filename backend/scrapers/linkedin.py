@@ -39,7 +39,7 @@ def _scrape_job_detail_bs4(url: str) -> dict:
 async def scrape_linkedin_jobs(
     roles: List[str] = None,
     locations: List[str] = None,
-    max_jobs: int = 25,
+    max_jobs: int = 40,
     headless: bool = True,
 ) -> List[dict]:
     """
@@ -47,7 +47,9 @@ async def scrape_linkedin_jobs(
     Returns list of normalized job dicts.
     """
     roles = roles or settings.target_roles_list
-    locations = ["Bengaluru", "Delhi", "Noida", "Pune", "Hyderabad", "Mumbai" , "Gurugram"]
+    locations = locations or settings.preferred_locations_list
+    if not locations:
+        locations = ["Bengaluru", "Delhi", "Noida", "Pune", "Hyderabad", "Mumbai", "Gurugram", "Remote"]
     all_jobs = []
 
     headers = {
@@ -63,7 +65,7 @@ async def scrape_linkedin_jobs(
                     f"https://www.linkedin.com/jobs/search/"
                     f"?keywords={query}"
                     f"&location={loc}"
-                    f"&f_TPR=r86400"  # Last 24 hours
+                    f"&f_TPR=r604800"  # Last 7 days
                     f"&f_E=1%2C2"     # Internship & Entry Level (<2 yrs)
                 )
                 

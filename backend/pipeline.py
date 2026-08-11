@@ -7,7 +7,8 @@ from loguru import logger
 from sqlalchemy.orm import Session
 
 from backend.db.models import Job, SessionLocal
-from backend.scrapers.filter_utils import is_job_experience_valid
+from backend.scrapers.filter_utils import is_job_experience_valid, is_pure_frontend_role
+from backend.scrapers.scoring import score_job
 from backend.scrapers.registry import SCRAPER_REGISTRY, SCRAPER_LABELS, resolve_roles
 from backend.config import settings
 from backend.platforms import DEFAULT_SCAN_PLATFORMS
@@ -19,11 +20,8 @@ def upsert_jobs(jobs: list, db: Session) -> int:
     seen_urls = set()
     seen_title_company = set()
 
-    frontend_keywords = [
-        "frontend", "front-end", "front end", "react", "angular", "vue",
-        "ui developer", "user interface",
-    ]
     max_exp_years = getattr(settings, "experience_years", 2)
+    min_score = getattr(settings, "min_relevance_score", 55)
 
     excluded = [c.lower() for c in settings.excluded_companies_list if c.strip()]
 
@@ -41,7 +39,7 @@ def upsert_jobs(jobs: list, db: Session) -> int:
         if not url or url in seen_urls:
             continue
 
-        if any(keyword in title.lower() for keyword in frontend_keywords):
+        if is_pure_frontend_role(title):
             logger.info(f"Skipping frontend role: {title}")
             continue
 
@@ -49,6 +47,19 @@ def upsert_jobs(jobs: list, db: Session) -> int:
         if not is_valid:
             logger.info(f"Hard filter excluded [{company} - {title}]: {reason}")
             continue
+
+        score, fit_reason = score_job(
+            job_data,
+            target_roles=settings.target_roles_list,
+            preferred_locations=settings.preferred_locations_list,
+            experience_years=max_exp_years,
+        )
+        if score < min_score:
+            logger.info(f"Below min score ({score} < {min_score}): [{company} - {title}]")
+            continue
+
+        job_data["score"] = score
+        job_data["fit_reason"] = fit_reason
 
         tc_key = (title.lower().strip(), company.lower().strip())
         if tc_key in seen_title_company:
@@ -135,11 +146,7 @@ async def run_scan_pipeline(
 
     logger.info(f"Total raw jobs found: {len(all_raw_jobs)}")
 
-    analyzed_jobs = []
-    for job in all_raw_jobs:
-        job["score"] = 100
-        job["fit_reason"] = "Matched via broad search"
-        analyzed_jobs.append(job)
+    analyzed_jobs = list(all_raw_jobs)
 
     db = SessionLocal()
     try:

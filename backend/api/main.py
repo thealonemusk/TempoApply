@@ -76,7 +76,7 @@ class JobOut(BaseModel):
 
 class ScanRequest(BaseModel):
     platforms: List[str] = list(DEFAULT_SCAN_PLATFORMS)
-    max_jobs_per_platform: int = 20
+    max_jobs_per_platform: int = 40
     headless: bool = True
 
 
