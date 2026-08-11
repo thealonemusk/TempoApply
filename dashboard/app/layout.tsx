@@ -5,6 +5,9 @@ import { ThemeProvider } from '@/components/ThemeProvider';
 export const metadata: Metadata = {
   title: 'TempoApply',
   description: 'Job discovery for early-career engineers',
+  icons: {
+    icon: '/vercel.png',
+  },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
