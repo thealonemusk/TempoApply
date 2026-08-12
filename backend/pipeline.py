@@ -1,46 +1,83 @@
 """
-Job Pipeline Orchestrator — orchestrates the full job discovery, analysis,
-resume tailoring, and outreach generation pipeline.
+Job Pipeline Orchestrator — multi-platform job discovery and experience validation.
 """
 import asyncio
 import json
-from pathlib import Path
 from loguru import logger
 from sqlalchemy.orm import Session
 
-from backend.db.models import Job, Application, BaseResume, SessionLocal
-from backend.ai.analyzer import analyze_jd
-from backend.ai.resume_tailor import tailor_resume, save_tailored_resume
-from backend.ai.cold_email import generate_cold_email, generate_linkedin_message, generate_cover_letter
-from backend.ai.latex_parser import parse_tex_file, tex_to_text
+from backend.db.models import Job, SessionLocal
+from backend.scrapers.filter_utils import is_job_experience_valid, is_pure_frontend_role
+from backend.scrapers.scoring import score_job
+from backend.scrapers.registry import SCRAPER_REGISTRY, SCRAPER_LABELS, resolve_roles
 from backend.config import settings
-
-
-def get_base_resume_text() -> str:
-    """Load and parse the active base resume from DB or file."""
-    db = SessionLocal()
-    try:
-        base = db.query(BaseResume).filter(BaseResume.is_active == True).first()
-        if base and base.content_text:
-            return base.content_text
-        # Fallback to file
-        if Path(settings.base_resume_path).exists():
-            return parse_tex_file(settings.base_resume_path)
-        return ""
-    finally:
-        db.close()
+from backend.platforms import DEFAULT_SCAN_PLATFORMS
 
 
 def upsert_jobs(jobs: list, db: Session) -> int:
-    """Insert new jobs (skip duplicates by URL). Returns count of new jobs."""
+    """Insert new jobs (skip duplicates by URL or Company+Title). Returns count of new jobs."""
     count = 0
+    seen_urls = set()
+    seen_title_company = set()
+
+    max_exp_years = getattr(settings, "experience_years", 2)
+    min_score = getattr(settings, "min_relevance_score", 55)
+
+    excluded = [c.lower() for c in settings.excluded_companies_list if c.strip()]
+
     for job_data in jobs:
         url = job_data.get("url", "")
-        if not url:
+        title = job_data.get("title", "")
+        company = job_data.get("company", "")
+
+        if excluded and company:
+            company_lower = company.lower()
+            if any(exc in company_lower for exc in excluded):
+                logger.info(f"Skipping excluded company: {company}")
+                continue
+
+        if not url or url in seen_urls:
             continue
-        existing = db.query(Job).filter(Job.url == url).first()
-        if existing:
+
+        if is_pure_frontend_role(title):
+            logger.info(f"Skipping frontend role: {title}")
             continue
+
+        is_valid, reason = is_job_experience_valid(job_data, max_years=max_exp_years)
+        if not is_valid:
+            logger.info(f"Hard filter excluded [{company} - {title}]: {reason}")
+            continue
+
+        score, fit_reason = score_job(
+            job_data,
+            target_roles=settings.target_roles_list,
+            preferred_locations=settings.preferred_locations_list,
+            experience_years=max_exp_years,
+        )
+        if score < min_score:
+            logger.info(f"Below min score ({score} < {min_score}): [{company} - {title}]")
+            continue
+
+        job_data["score"] = score
+        job_data["fit_reason"] = fit_reason
+
+        tc_key = (title.lower().strip(), company.lower().strip())
+        if tc_key in seen_title_company:
+            continue
+
+        seen_urls.add(url)
+        seen_title_company.add(tc_key)
+
+        existing_url = db.query(Job).filter(Job.url == url).first()
+        if existing_url:
+            continue
+
+        existing_tc = db.query(Job).filter(
+            Job.title.ilike(title), Job.company.ilike(company)
+        ).first()
+        if existing_tc:
+            continue
+
         missing_skills = json.dumps(job_data.get("missing_skills", []))
         job = Job(
             title=job_data.get("title", ""),
@@ -73,78 +110,44 @@ async def run_scan_pipeline(
     headless: bool = True,
 ) -> dict:
     """
-    Run the full job discovery pipeline:
-    1. Scrape jobs from selected platforms
-    2. Analyze each job with Gemini
-    3. Store in DB
-    Returns summary stats.
+    Run job discovery: scrape selected platforms, apply filters, store in DB.
     """
-    platforms = platforms or ["linkedin", "indeed", "naukri", "instahyre"]
-    base_resume_text = get_base_resume_text()
-
-    if not base_resume_text:
-        logger.warning("No base resume found! Analysis will be limited.")
+    platforms = platforms or list(DEFAULT_SCAN_PLATFORMS)
+    roles = resolve_roles(settings.target_roles_list)
+    logger.info(f"Targeting roles: {roles}")
 
     all_raw_jobs = []
+    tasks = []
+    platform_names = []
 
-    if "linkedin" in platforms:
-        try:
-            from backend.scrapers.linkedin import scrape_linkedin_jobs
-            logger.info("🔍 Scraping LinkedIn...")
-            jobs = await scrape_linkedin_jobs(max_jobs=max_jobs_per_platform, headless=headless)
-            all_raw_jobs.extend(jobs)
-            logger.info(f"LinkedIn: {len(jobs)} jobs")
-        except Exception as e:
-            logger.error(f"LinkedIn scraping error: {e}")
+    for key in platforms:
+        scrape_fn = SCRAPER_REGISTRY.get(key)
+        if not scrape_fn:
+            logger.warning(f"Unknown platform '{key}' — skipping")
+            continue
 
-    if "indeed" in platforms:
-        try:
-            from backend.scrapers.indeed import scrape_indeed_jobs
-            logger.info("🔍 Scraping Indeed...")
-            jobs = await scrape_indeed_jobs(max_jobs=max_jobs_per_platform, headless=headless)
-            all_raw_jobs.extend(jobs)
-            logger.info(f"Indeed: {len(jobs)} jobs")
-        except Exception as e:
-            logger.error(f"Indeed scraping error: {e}")
+        label = SCRAPER_LABELS.get(key, key)
 
-    if "naukri" in platforms:
-        try:
-            from backend.scrapers.naukri import scrape_naukri_jobs
-            logger.info("🔍 Scraping Naukri...")
-            jobs = await scrape_naukri_jobs(max_jobs=max_jobs_per_platform, headless=headless)
-            all_raw_jobs.extend(jobs)
-            logger.info(f"Naukri: {len(jobs)} jobs")
-        except Exception as e:
-            logger.error(f"Naukri scraping error: {e}")
+        async def run_one(fn=scrape_fn, name=key, display=label):
+            logger.info(f"Scraping {display}...")
+            return await fn(roles=roles, max_jobs=max_jobs_per_platform, headless=headless)
 
-    if "instahyre" in platforms:
-        try:
-            from backend.scrapers.instahyre import scrape_instahyre_jobs
-            logger.info("🔍 Scraping InstaHyre...")
-            jobs = await scrape_instahyre_jobs(max_jobs=max_jobs_per_platform, headless=headless)
-            all_raw_jobs.extend(jobs)
-            logger.info(f"InstaHyre: {len(jobs)} jobs")
-        except Exception as e:
-            logger.error(f"InstaHyre scraping error: {e}")
+        tasks.append(run_one())
+        platform_names.append(key)
+
+    if tasks:
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for name, result in zip(platform_names, results):
+            if isinstance(result, Exception):
+                logger.error(f"{name} scraping error: {result}")
+            elif result:
+                all_raw_jobs.extend(result)
+                logger.info(f"{name}: {len(result)} jobs")
 
     logger.info(f"Total raw jobs found: {len(all_raw_jobs)}")
 
-    # Analyze all jobs
-    analyzed_jobs = []
-    for job in all_raw_jobs:
-        analysis = analyze_jd(
-            jd_text=job.get("jd_text", ""),
-            base_resume_text=base_resume_text,
-            job_title=job.get("title", ""),
-        )
-        job.update(analysis)
-        analyzed_jobs.append(job)
+    analyzed_jobs = list(all_raw_jobs)
 
-    # Filter by score
-    qualified = [j for j in analyzed_jobs if j.get("score", 0) >= settings.min_relevance_score]
-    logger.info(f"Qualified jobs (score >= {settings.min_relevance_score}): {len(qualified)}")
-
-    # Store in DB
     db = SessionLocal()
     try:
         new_count = upsert_jobs(analyzed_jobs, db)
@@ -153,94 +156,7 @@ async def run_scan_pipeline(
 
     return {
         "total_scraped": len(all_raw_jobs),
-        "qualified": len(qualified),
+        "qualified": len(analyzed_jobs),
         "new_in_db": new_count,
         "platforms": platforms,
     }
-
-
-def generate_application_materials(job_id: str) -> dict:
-    """
-    For a given job, generate:
-    - Tailored resume (LaTeX)
-    - Cold email
-    - LinkedIn message
-    - Cover letter
-    Store in Application table and return.
-    """
-    db = SessionLocal()
-    try:
-        job = db.query(Job).filter(Job.id == job_id).first()
-        if not job:
-            return {"error": "Job not found"}
-
-        base_resume_text = get_base_resume_text()
-        base_resume_tex = ""
-        if Path(settings.base_resume_path).exists():
-            base_resume_tex = Path(settings.base_resume_path).read_text(encoding="utf-8", errors="ignore")
-
-        key_requirements = json.loads(job.missing_skills or "[]")
-
-        # Tailor resume
-        tailor_result = tailor_resume(
-            jd_text=job.jd_text,
-            base_resume_tex=base_resume_tex or base_resume_text,
-            job_title=job.title,
-            company=job.company,
-            key_requirements=key_requirements,
-        )
-        tailored_path = save_tailored_resume(
-            tailor_result["tailored_tex"], job.id, job.company
-        )
-
-        # Generate outreach
-        cold_email = generate_cold_email(
-            job_title=job.title,
-            company=job.company,
-            jd_text=job.jd_text,
-            recruiter_name=job.recruiter_name,
-            fit_reason=job.fit_reason,
-        )
-        linkedin_msg = generate_linkedin_message(
-            job_title=job.title,
-            company=job.company,
-            recruiter_name=job.recruiter_name,
-            fit_reason=job.fit_reason,
-        )
-        cover_letter = generate_cover_letter(
-            job_title=job.title,
-            company=job.company,
-            jd_text=job.jd_text,
-            base_resume_text=base_resume_text,
-        )
-
-        # Upsert Application record
-        app = db.query(Application).filter(Application.job_id == job_id).first()
-        if not app:
-            app = Application(job_id=job_id)
-            db.add(app)
-
-        app.tailored_resume_path = tailored_path
-        app.tailored_resume_text = tailor_result["tailored_tex"]
-        app.cold_email = cold_email
-        app.linkedin_message = linkedin_msg
-        app.cover_letter = cover_letter
-
-        job.status = "tailored"
-        db.commit()
-
-        logger.info(f"✅ Materials generated for: {job.company} - {job.title}")
-
-        return {
-            "job_id": job_id,
-            "tailored_resume_path": tailored_path,
-            "cold_email": cold_email,
-            "linkedin_message": linkedin_msg,
-            "cover_letter": cover_letter,
-            "changes_summary": tailor_result["changes_summary"],
-        }
-    except Exception as e:
-        logger.error(f"Material generation failed for {job_id}: {e}")
-        return {"error": str(e)}
-    finally:
-        db.close()
