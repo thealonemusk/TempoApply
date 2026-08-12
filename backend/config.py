@@ -13,26 +13,16 @@ if not env_path.exists():
 class Settings(BaseSettings):
     # AI
     gemini_api_key: str = ""
-    gpt_key: str = ""
 
     # Platform credentials
     linkedin_email: str = ""
     linkedin_password: str = ""
-
-    # Indeed — Google-auth only, no password needed
     indeed_email: str = ""
-    indeed_password: str = ""          # leave blank if using Google auth
-    indeed_use_google_auth: bool = True
-
-    # Naukri — Google-auth only, no password needed
+    indeed_password: str = ""
     naukri_email: str = ""
-    naukri_password: str = ""          # leave blank if using Google auth
-    naukri_use_google_auth: bool = True
-
-    # InstaHyre — Google-auth only, no password needed
+    naukri_password: str = ""
     instahyre_email: str = ""
-    instahyre_password: str = ""       # leave blank if using Google auth
-    instahyre_use_google_auth: bool = True
+    instahyre_password: str = ""
 
     # User profile
     user_full_name: str = "Ashutosh Jha"
@@ -44,9 +34,9 @@ class Settings(BaseSettings):
 
     # Job preferences
     target_roles: str = "Software Engineer,Backend Engineer"
-    experience_years: int = 2
+    experience_years: int = 3
     preferred_locations: str = "Bengaluru,Remote"
-    min_relevance_score: int = 55
+    min_relevance_score: int = 60
     excluded_companies: str = ""
 
     # App
