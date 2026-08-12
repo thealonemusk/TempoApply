@@ -31,7 +31,7 @@ export default function Sidebar() {
                 body: JSON.stringify({ platforms: ['linkedin', 'indeed', 'naukri', 'instahyre', 'company_careers'], max_jobs_per_platform: 20, headless: true }),
             });
             const data = await res.json();
-            setScanOk(true);
+            setScanOk(false);
             setScanStatus(data.message || 'Scan started');
         } catch {
             setScanOk(false);

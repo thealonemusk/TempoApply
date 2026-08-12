@@ -21,7 +21,6 @@ export interface Job {
     easy_apply: boolean;
     recruiter_name: string;
     status: JobStatus;
-    discovered_at: string;
 }
 
 function ScoreBadge({ score }: { score: number }) {
