@@ -112,7 +112,7 @@ export default function PipelinePage() {
       body: JSON.stringify(manualForm),
     });
     setAddJobOpen(false);
-    setManualForm({ title: '', company: '', url: '', jd_text: '', location: '' });
+    setManualForm({ title: '', company: '', url: '',                      jd_text: '', location: '' });
     fetchJobs();
   };
 
