@@ -12,52 +12,27 @@ from backend.config import settings
 
 
 async def _login_naukri(page) -> bool:
-    """Login to Naukri using Google OAuth (no password required)."""
     try:
-        await page.goto("https://www.naukri.com/nlogin/login", timeout=30000)
+        await page.goto("https://www.naukri.com/", timeout=30000)
         await page.wait_for_timeout(2000)
 
-        # Click the "Login with Google" button
-        google_btn = await page.query_selector(
-            'a[href*="google"], button:has-text("Google"), [class*="google"], [data-ga*="google"]'
-        )
-        if not google_btn:
-            # Try alternate selector for Naukri's Google login link
-            google_btn = await page.query_selector('a.google-login, a[title*="Google"], .googleBtn')
-
-        if not google_btn:
-            logger.error("Naukri: Could not find 'Login with Google' button")
-            return False
-
-        # Google OAuth opens in a popup — wait for it
-        async with page.context.expect_page() as popup_info:
-            await google_btn.click()
-        google_page = await popup_info.value
-        await google_page.wait_for_load_state("domcontentloaded", timeout=20000)
-        await google_page.wait_for_timeout(2000)
-
-        # Fill Google email
-        email_input = await google_page.query_selector('input[type="email"]')
-        if email_input:
-            await email_input.fill(settings.naukri_email)
-            await google_page.click('button:has-text("Next"), #identifierNext')
-            await google_page.wait_for_timeout(3000)
-
-        # If account-picker appears, click the matching account
+        # Click login button
         try:
-            account = await google_page.query_selector(f'[data-email="{settings.naukri_email}"]')
-            if account:
-                await account.click()
-                await google_page.wait_for_timeout(3000)
+            login_btn = await page.query_selector('[title="Jobseeker Login"]')
+            if login_btn:
+                await login_btn.click()
+                await page.wait_for_timeout(1500)
         except Exception:
-            pass
+            await page.goto("https://www.naukri.com/nlogin/login", timeout=30000)
 
-        # Wait for redirect back to Naukri
-        await page.wait_for_timeout(6000)
-        logger.info("✅ Naukri Google login successful")
+        await page.fill('input[placeholder="Enter your active Email ID / Username"]', settings.naukri_email)
+        await page.fill('input[placeholder="Enter your password"]', settings.naukri_password)
+        await page.click('button[type="submit"]')
+        await page.wait_for_timeout(4000)
+        logger.info("✅ Naukri login successful")
         return True
     except Exception as e:
-        logger.error(f"Naukri Google login failed: {e}")
+        logger.error(f"Naukri login failed: {e}")
         return False
 
 
@@ -67,26 +42,27 @@ async def scrape_naukri_jobs(
     max_jobs: int = 25,
     headless: bool = True,
 ) -> List[dict]:
-    """Scrape jobs from Naukri.com without login requirement."""
+    """Scrape jobs from Naukri.com."""
     roles = roles or settings.target_roles_list
-    locations = ["Bengaluru", "Delhi", "Noida", "Pune", "Hyderabad", "Mumbai" , "Gurugram"]
+    locations = locations or settings.preferred_locations_list
     all_jobs = []
 
     async with async_playwright() as pw:
-        # Launch browser without login dependencies 
         browser, ctx = await create_browser_context(pw, headless=headless)
         page = await ctx.new_page()
 
-        # REMOVED: Google login requirement. Public search works best for simply harvesting URLs.
-        
-        for role in roles:
-            for location in locations:
+        if not await _login_naukri(page):
+            await browser.close()
+            return []
+
+        for role in roles[:2]:
+            for location in locations[:2]:
                 try:
-                    job_slug = role.lower().replace(' ', '-')
-                    loc_slug = location.lower().replace(' ', '-')
-                    # Appending 0-to-2-years to the slug filter to restrict experience
-                    search_url = f"https://www.naukri.com/{job_slug}-jobs-in-{loc_slug}-0-to-2-years?jobAge=1&sort=1"
-                    
+                    search_url = (
+                        f"https://www.naukri.com/{role.lower().replace(' ', '-')}"
+                        f"-jobs-in-{location.lower().replace(' ', '-')}"
+                        f"?jobAge=1&sort=1"  # Last 1 day, newest first
+                    )
                     await page.goto(search_url, timeout=30000)
                     await page.wait_for_timeout(3000)
 
