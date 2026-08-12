@@ -1,122 +1,200 @@
 """
-LinkedIn Job Scraper — searches and scrapes jobs from LinkedIn.
-Handles public job search and JD extraction using BeautifulSoup to avoid Playwright subprocess issues.
+LinkedIn Job Scraper — searches and scrapes jobs from LinkedIn public listings.
+Uses the guest seeMoreJobPostings API with pagination for higher coverage.
 """
 import asyncio
-from typing import List, Optional
-from loguru import logger
+import urllib.parse
+from concurrent.futures import ThreadPoolExecutor
+from typing import List, Set
+
 import requests
 from bs4 import BeautifulSoup
-import urllib.parse
+from loguru import logger
 
 from backend.scrapers.base import normalize_job
+from backend.scrapers.filter_utils import is_job_experience_valid
 from backend.config import settings
+
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+)
+HEADERS = {"User-Agent": USER_AGENT}
+
+# Broader India coverage beyond user settings (scoring still ranks preferred cities).
+EXTRA_LOCATIONS = [
+    "Bengaluru", "Bangalore", "Hyderabad", "Pune", "Mumbai",
+    "Gurugram", "Gurgaon", "Noida", "Delhi", "Chennai", "Remote",
+]
+
+LINKEDIN_PAGES = 5
+PAGE_SIZE = 10
+JD_WORKERS = 8
+
+
+def _merge_locations(locations: List[str]) -> List[str]:
+    merged: List[str] = []
+    seen: Set[str] = set()
+    for loc in list(locations) + EXTRA_LOCATIONS:
+        key = loc.lower().strip()
+        if key and key not in seen:
+            seen.add(key)
+            merged.append(loc.strip())
+    return merged
+
+
+def _search_queries(role: str) -> List[str]:
+    """Entry-focused query variants to surface more relevant LinkedIn results."""
+    base = role.strip()
+    if not base:
+        return []
+    queries = [base]
+    lower = base.lower()
+    if "fresher" not in lower and "entry" not in lower and "junior" not in lower:
+        queries.append(f"{base} entry level")
+        queries.append(f"junior {base}")
+    return queries
+
+
+def _parse_search_cards(html: str) -> List[dict]:
+    soup = BeautifulSoup(html, "html.parser")
+    cards = soup.find_all("li")
+    results = []
+
+    for card in cards:
+        title_el = card.select_one(".base-search-card__title, h3")
+        company_el = card.select_one(".base-search-card__subtitle, h4")
+        location_el = card.select_one(".job-search-card__location")
+        link_el = card.find("a", href=True)
+
+        title = title_el.get_text(strip=True) if title_el else ""
+        company = company_el.get_text(strip=True) if company_el else ""
+        location = location_el.get_text(strip=True) if location_el else ""
+        url = link_el["href"].split("?")[0] if link_el else ""
+
+        if title and url:
+            results.append({
+                "title": title,
+                "company": company,
+                "location": location,
+                "url": url,
+            })
+
+    return results
+
+
+def _fetch_search_page(keywords: str, location: str, start: int) -> List[dict]:
+    params = urllib.parse.urlencode({
+        "keywords": keywords,
+        "location": location,
+        "f_TPR": "r604800",  # Last 7 days
+        "start": start,
+    })
+    url = f"https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search?{params}"
+    resp = requests.get(url, headers=HEADERS, timeout=15)
+    return _parse_search_cards(resp.text)
+
 
 def _scrape_job_detail_bs4(url: str) -> dict:
     try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        }
-        resp = requests.get(url, headers=headers, timeout=15)
-        soup = BeautifulSoup(resp.content, 'html.parser')
-        
-        # In public view, jd is in .show-more-less-html__markup
-        jd_el = soup.find(class_='show-more-less-html__markup')
+        resp = requests.get(url, headers=HEADERS, timeout=15)
+        soup = BeautifulSoup(resp.content, "html.parser")
+
+        jd_el = soup.find(class_="show-more-less-html__markup")
         if not jd_el:
-            jd_el = soup.find(class_='description__text')
-        
-        jd_text = jd_el.get_text(separator='\n').strip() if jd_el else ""
-        
-        return {
-            "jd_text": jd_text,
-            "easy_apply": False,
-            "recruiter_profile": "",
-        }
+            jd_el = soup.find(class_="description__text")
+
+        jd_text = jd_el.get_text(separator="\n").strip() if jd_el else ""
+        return {"jd_text": jd_text, "easy_apply": False, "recruiter_profile": ""}
     except Exception as e:
         logger.debug(f"Could not scrape job detail {url}: {e}")
         return {"jd_text": "", "easy_apply": False, "recruiter_name": "", "recruiter_profile": ""}
 
+
+def _collect_listings(
+    roles: List[str],
+    locations: List[str],
+    max_jobs: int,
+) -> List[dict]:
+    seen_urls: Set[str] = set()
+    listings: List[dict] = []
+
+    for role in roles:
+        for query in _search_queries(role):
+            for location in locations:
+                for page in range(LINKEDIN_PAGES):
+                    start = page * PAGE_SIZE
+                    try:
+                        batch = _fetch_search_page(query, location, start)
+                    except Exception as exc:
+                        logger.debug(f"LinkedIn page failed for '{query}' / '{location}' @ {start}: {exc}")
+                        break
+
+                    if not batch:
+                        break
+
+                    for item in batch:
+                        url = item["url"]
+                        if url in seen_urls:
+                            continue
+                        seen_urls.add(url)
+
+                        preview = {
+                            "title": item["title"],
+                            "company": item["company"],
+                            "location": item["location"] or location,
+                            "url": url,
+                            "jd_text": "",
+                        }
+                        ok, _ = is_job_experience_valid(preview)
+                        if not ok:
+                            continue
+
+                        listings.append(preview)
+                        if len(listings) >= max_jobs:
+                            return listings
+
+                    if len(batch) < PAGE_SIZE:
+                        break
+
+    return listings
+
+
+def _enrich_listings(listings: List[dict]) -> List[dict]:
+    if not listings:
+        return []
+
+    with ThreadPoolExecutor(max_workers=JD_WORKERS) as pool:
+        details = list(pool.map(_scrape_job_detail_bs4, [j["url"] for j in listings]))
+
+    enriched = []
+    for listing, detail in zip(listings, details):
+        job_data = {**listing, **detail}
+        ok, _ = is_job_experience_valid(job_data)
+        if not ok:
+            continue
+        enriched.append(normalize_job(job_data, "linkedin"))
+    return enriched
+
+
 async def scrape_linkedin_jobs(
     roles: List[str] = None,
     locations: List[str] = None,
-    max_jobs: int = 40,
+    max_jobs: int = 200,
     headless: bool = True,
 ) -> List[dict]:
     """
-    Main LinkedIn scraper entry point using requests/BeautifulSoup.
+    Main LinkedIn scraper entry point.
     Returns list of normalized job dicts.
     """
     roles = roles or settings.target_roles_list
-    locations = locations or settings.preferred_locations_list
-    if not locations:
-        locations = ["Bengaluru", "Delhi", "Noida", "Pune", "Hyderabad", "Mumbai", "Gurugram", "Remote"]
-    all_jobs = []
+    locations = _merge_locations(locations or settings.preferred_locations_list)
 
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    }
-    
-    for role in roles:
-        for location in locations:
-            try:
-                query = urllib.parse.quote(role)
-                loc = urllib.parse.quote(location)
-                search_url = (
-                    f"https://www.linkedin.com/jobs/search/"
-                    f"?keywords={query}"
-                    f"&location={loc}"
-                    f"&f_TPR=r604800"  # Last 7 days
-                    f"&f_E=1%2C2"     # Internship & Entry Level (<2 yrs)
-                )
-                
-                resp = await asyncio.to_thread(requests.get, search_url, headers=headers, timeout=15)
-                soup = BeautifulSoup(resp.content, 'html.parser')
-                
-                job_cards = soup.find_all(class_="base-card")
-                if not job_cards:
-                    job_cards = soup.find_all(class_="base-search-card")
-                
-                logger.info(f"Found {len(job_cards)} LinkedIn jobs for '{role}' in '{location}'")
-                
-                jobs_scraped = 0
-                for card in job_cards[:max_jobs]:
-                    try:
-                        title_el = card.find(class_='base-search-card__title')
-                        company_el = card.find(class_='base-search-card__subtitle')
-                        link_el = card.find('a', class_='base-card__full-link')
-                        
-                        title = title_el.text.strip() if title_el else ""
-                        company = company_el.text.strip() if company_el else ""
-                        url = link_el['href'] if link_el else ""
-                        
-                        if not title or not url:
-                            continue
-                            
-                        # Normalize URL
-                        url = url.split('?')[0]
-                        
-                        # Get JD
-                        detail = await asyncio.to_thread(_scrape_job_detail_bs4, url)
-                        
-                        raw = {
-                            "title": title,
-                            "company": company,
-                            "location": location,
-                            "url": url,
-                            **detail,
-                        }
-                        
-                        all_jobs.append(normalize_job(raw, "linkedin"))
-                        jobs_scraped += 1
-                        
-                    except Exception as e:
-                        logger.debug(f"LinkedIn bs4: Skipping card due to parse error: {e}")
-                        continue
-                        
-                logger.info(f"Scraped {jobs_scraped} LinkedIn jobs for '{role}'")
-                
-            except Exception as e:
-                logger.error(f"LinkedIn search failed for {role}/{location}: {e}")
-                continue
-                
-    return all_jobs
+    logger.info(f"LinkedIn: searching {len(roles)} roles across {len(locations)} locations")
+
+    listings = await asyncio.to_thread(_collect_listings, roles, locations, max_jobs)
+    logger.info(f"LinkedIn: {len(listings)} listings passed title pre-filter")
+
+    jobs = await asyncio.to_thread(_enrich_listings, listings)
+    logger.info(f"LinkedIn: {len(jobs)} jobs after JD validation")
+    return jobs

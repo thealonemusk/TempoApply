@@ -6,7 +6,7 @@ import json
 import sys
 from pathlib import Path
 from typing import List, Optional
-from datetime import datetime
+from datetime import datetime, timedelta
 
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
@@ -76,7 +76,7 @@ class JobOut(BaseModel):
 
 class ScanRequest(BaseModel):
     platforms: List[str] = list(DEFAULT_SCAN_PLATFORMS)
-    max_jobs_per_platform: int = 40
+    max_jobs_per_platform: int = 200
     headless: bool = True
 
 
@@ -101,9 +101,10 @@ def get_jobs(
     status: Optional[str] = Query(None),
     platform: Optional[str] = Query(None),
     min_score: Optional[float] = Query(None),
+    max_age_days: int = Query(14, ge=1),
     db: Session = Depends(get_db),
 ):
-    """Get all jobs with optional filters."""
+    """Get all jobs with optional filters. Hides stale discovered/scored jobs by default."""
     query = db.query(Job)
     if status:
         query = query.filter(Job.status == status)
@@ -111,6 +112,11 @@ def get_jobs(
         query = query.filter(Job.platform == platform)
     if min_score is not None:
         query = query.filter(Job.relevance_score >= min_score)
+
+    cutoff = datetime.utcnow() - timedelta(days=max_age_days)
+    query = query.filter(
+        (Job.status.notin_(["discovered", "scored"])) | (Job.discovered_at >= cutoff)
+    )
     return query.order_by(Job.relevance_score.desc()).all()
 
 
@@ -180,10 +186,23 @@ def clear_discovered_jobs(db: Session = Depends(get_db)):
     return {"success": True, "deleted_count": deleted_count}
 
 
+@app.post("/api/jobs/purge-stale")
+def purge_stale_jobs(
+    max_age_days: int = Query(14, ge=1),
+    db: Session = Depends(get_db),
+):
+    """Delete discovered/scored jobs older than max_age_days."""
+    from backend.pipeline import purge_stale_discovered_jobs
+
+    purged_count = purge_stale_discovered_jobs(db, max_age_days=max_age_days)
+    return {"success": True, "purged_count": purged_count}
+
+
 @app.post("/api/jobs/purge-experienced")
 def purge_experienced_jobs(db: Session = Depends(get_db)):
-    """Purge all existing jobs in DB that exceed 2 years of experience or have senior title keywords."""
-    from backend.scrapers.filter_utils import is_job_experience_valid
+    """Purge jobs that exceed experience limits or fail career-site eligibility."""
+    from backend.scrapers.filter_utils import is_job_experience_valid, is_career_listing_eligible
+
     all_jobs = db.query(Job).all()
     purged_count = 0
     for job in all_jobs:
@@ -192,8 +211,11 @@ def purge_experienced_jobs(db: Session = Depends(get_db)):
             "company": job.company,
             "experience_required": job.experience_required,
             "jd_text": job.jd_text,
+            "platform": job.platform,
         }
         is_valid, _ = is_job_experience_valid(job_dict, max_years=settings.experience_years)
+        if is_valid and job.platform == "company_careers":
+            is_valid, _ = is_career_listing_eligible(job_dict)
         if not is_valid:
             if job.application:
                 db.delete(job.application)

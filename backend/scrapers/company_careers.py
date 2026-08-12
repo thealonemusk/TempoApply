@@ -6,6 +6,7 @@ Platform name: "company_careers"
 """
 
 import asyncio
+import re
 import time
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional
@@ -13,7 +14,12 @@ from loguru import logger
 import requests
 from bs4 import BeautifulSoup
 
-from backend.scrapers.filter_utils import EXCLUDED_TITLE_KEYWORDS, INTERN_PATTERN
+from backend.scrapers.filter_utils import (
+    EXCLUDED_TITLE_KEYWORDS,
+    INTERN_PATTERN,
+    is_job_experience_valid,
+    is_career_listing_eligible,
+)
 from backend.scrapers.base import normalize_job
 from backend.scrapers.company_list import TOP_COMPANIES
 
@@ -21,8 +27,8 @@ HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 }
 
-# Career boards update less often than LinkedIn; keep a 21-day window.
-FRESHNESS_DAYS = 21
+# Career boards: keep a tight freshness window (stale listings are common).
+FRESHNESS_DAYS = 7
 
 # Extra title aliases beyond the pipeline role strings (SDE, fullstack, etc.)
 ROLE_ALIASES = [
@@ -56,24 +62,66 @@ def _is_fresh(timestamp_str: Optional[str] = None, timestamp_ms: Optional[int] =
     """Check if job is fresh (posted/updated within FRESHNESS_DAYS)."""
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(days=FRESHNESS_DAYS)
-    
+
     if timestamp_str:
         try:
             t_str = timestamp_str.replace("Z", "+00:00")
             dt = datetime.fromisoformat(t_str)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
             return dt >= cutoff
         except Exception as e:
             logger.debug(f"Error parsing timestamp_str {timestamp_str}: {e}")
-            return True
-            
+            return False
+
     if timestamp_ms:
         try:
             dt = datetime.fromtimestamp(timestamp_ms / 1000.0, tz=timezone.utc)
             return dt >= cutoff
         except Exception as e:
             logger.debug(f"Error parsing timestamp_ms {timestamp_ms}: {e}")
-            return True
-            
+            return False
+
+    return False
+
+
+def _is_workday_posting_fresh(posted_on: str) -> bool:
+    """Parse Workday human-readable postedOn strings."""
+    if not posted_on:
+        return False
+
+    s = posted_on.lower().strip()
+    if "today" in s:
+        return True
+    if "yesterday" in s:
+        return True
+
+    days_match = re.search(r"(\d+)\s*\+?\s*days?", s)
+    if days_match:
+        return int(days_match.group(1)) <= FRESHNESS_DAYS
+
+    weeks_match = re.search(r"(\d+)\s*weeks?", s)
+    if weeks_match:
+        return int(weeks_match.group(1)) * 7 <= FRESHNESS_DAYS
+
+    if "30+" in s or "month" in s or "months" in s:
+        return False
+
+    return False
+
+
+def _passes_career_filters(job_data: dict) -> bool:
+    """Apply experience + career-site eligibility checks before returning a job."""
+    ok, reason = is_job_experience_valid(job_data)
+    if not ok:
+        logger.debug(f"Career filter rejected [{job_data.get('company')} - {job_data.get('title')}]: {reason}")
+        return False
+
+    ok, reason = is_career_listing_eligible(job_data)
+    if not ok:
+        logger.debug(f"Career filter rejected [{job_data.get('company')} - {job_data.get('title')}]: {reason}")
+        return False
+
     return True
 
 
@@ -161,6 +209,12 @@ def _scrape_greenhouse(company: dict, roles: List[str]) -> List[dict]:
                 "easy_apply": True,
             }, "company_careers"))
 
+        filtered = []
+        for job in results:
+            if _passes_career_filters(job):
+                filtered.append(job)
+        results = filtered
+
     except Exception as e:
         logger.warning(f"Greenhouse {name}: {e}")
 
@@ -205,7 +259,7 @@ def _scrape_lever(company: dict, roles: List[str]) -> List[dict]:
 
             # Lever uses epoch milliseconds in `createdAt`
             created_at_ms = job.get("createdAt")
-            if created_at_ms and not _is_fresh(timestamp_ms=created_at_ms):
+            if not created_at_ms or not _is_fresh(timestamp_ms=created_at_ms):
                 continue
 
             job_url = job.get("hostedUrl", "")
@@ -234,13 +288,16 @@ def _scrape_lever(company: dict, roles: List[str]) -> List[dict]:
                 "easy_apply": True,
             }, "company_careers"))
 
+        filtered = []
+        for job in results:
+            if _passes_career_filters(job):
+                filtered.append(job)
+        results = filtered
+
     except Exception as e:
         logger.warning(f"Lever {name}: {e}")
 
     return results
-
-
-# ─── Workday ────────────────────────────────────────────────────────────────
 
 WORKDAY_WD_SHARDS = ["wd1", "wd3", "wd5", "wd12", "wd103"]
 WORKDAY_PAGE_SIZE = 20  # API returns HTTP 400 above ~20 for most tenants
@@ -277,6 +334,28 @@ def _resolve_workday_host(
         except requests.RequestException as exc:
             logger.debug(f"Workday host probe failed for {host}: {exc}")
     return None
+
+
+def _fetch_workday_job_detail(
+    working_host: str,
+    tenant: str,
+    api_id: str,
+    external_path: str,
+) -> str:
+    """Fetch full JD text from Workday CXS job detail endpoint."""
+    detail_url = f"https://{working_host}/wday/cxs/{tenant}/{api_id}{external_path}"
+    try:
+        resp = requests.get(detail_url, headers=HEADERS, timeout=12)
+        if resp.status_code != 200:
+            return ""
+        data = resp.json()
+        desc_html = data.get("jobPostingInfo", {}).get("jobDescription", "") or ""
+        if not desc_html:
+            return ""
+        return BeautifulSoup(desc_html, "html.parser").get_text(separator="\n").strip()
+    except Exception as exc:
+        logger.debug(f"Workday detail fetch failed for {external_path}: {exc}")
+        return ""
 
 
 def _scrape_workday(company: dict, roles: List[str]) -> List[dict]:
@@ -340,8 +419,8 @@ def _scrape_workday(company: dict, roles: List[str]) -> List[dict]:
                 if not _location_matches(location, loc_filter):
                     continue
 
-                posted_on = posting.get("postedOn", "").lower()
-                if "30+" in posted_on or "month" in posted_on:
+                posted_on = posting.get("postedOn", "")
+                if not _is_workday_posting_fresh(posted_on):
                     continue
 
                 external_path = posting.get("externalPath", "")
@@ -353,14 +432,18 @@ def _scrape_workday(company: dict, roles: List[str]) -> List[dict]:
                     continue
                 seen_urls.add(job_url)
 
-                results.append(normalize_job({
+                jd_text = _fetch_workday_job_detail(working_host, tenant, api_id, external_path)
+                job_data = normalize_job({
                     "title": title,
                     "company": name,
                     "location": location,
                     "url": job_url,
-                    "jd_text": "",
+                    "jd_text": jd_text,
                     "easy_apply": False,
-                }, "company_careers"))
+                }, "company_careers")
+
+                if _passes_career_filters(job_data):
+                    results.append(job_data)
 
         except Exception as e:
             logger.warning(f"Workday {name} ({role}): {e}")
@@ -434,6 +517,12 @@ def _scrape_custom(company: dict, roles: List[str]) -> List[dict]:
                 "easy_apply": False,
             }, "company_careers"))
 
+        filtered = []
+        for job in results:
+            if _passes_career_filters(job):
+                filtered.append(job)
+        results = filtered
+
     except Exception as e:
         logger.warning(f"Custom {name}: {e}")
 
@@ -441,6 +530,19 @@ def _scrape_custom(company: dict, roles: List[str]) -> List[dict]:
 
 
 # ─── Main Entry Point ────────────────────────────────────────────────────────
+
+def _expanded_search_roles(roles: List[str]) -> List[str]:
+    """Add entry-focused variants for career-site search APIs."""
+    expanded: List[str] = []
+    seen: set = set()
+    extras = ["new grad", "university graduate", "entry level", "SDE 1", "associate engineer"]
+    for role in list(roles) + extras:
+        key = role.lower().strip()
+        if key and key not in seen:
+            seen.add(key)
+            expanded.append(role.strip())
+    return expanded
+
 
 async def scrape_company_career_jobs(
     roles: List[str] = None,
@@ -462,6 +564,7 @@ async def scrape_company_career_jobs(
         from backend.config import settings
         roles = settings.target_roles_list
 
+    search_roles = _expanded_search_roles(roles)
     company_list = companies or TOP_COMPANIES
     all_jobs: List[dict] = []
 
@@ -473,13 +576,13 @@ async def scrape_company_career_jobs(
             return []
         try:
             if ctype == "greenhouse":
-                return await asyncio.to_thread(_scrape_greenhouse, company, roles)
+                return await asyncio.to_thread(_scrape_greenhouse, company, search_roles)
             elif ctype == "lever":
-                return await asyncio.to_thread(_scrape_lever, company, roles)
+                return await asyncio.to_thread(_scrape_lever, company, search_roles)
             elif ctype == "workday":
-                return await asyncio.to_thread(_scrape_workday, company, roles)
+                return await asyncio.to_thread(_scrape_workday, company, search_roles)
             elif ctype == "custom":
-                return await asyncio.to_thread(_scrape_custom, company, roles)
+                return await asyncio.to_thread(_scrape_custom, company, search_roles)
             else:
                 logger.debug(f"Unknown company type '{ctype}' for {name}, skipping.")
                 return []

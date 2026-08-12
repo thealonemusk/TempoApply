@@ -18,13 +18,36 @@ EXCLUDED_TITLE_KEYWORDS = [
 # Patterns in job titles indicating level II/III or 2/3 (non-entry)
 EXCLUDED_TITLE_REGEXES = [
     r'\b(?:ii|iii|iv|v)\b',
-    r'(?<!\d)[-_\s](?:2|3|4|5)(?!(?:\s*\+|\s*(?:years?|yrs?|yr|y)\b))',
+    r'(?<!\d)[-_\s](?:2|3|4|5)(?!(?:\s*\+|\s*(?:years?|yrs?|yr|y)\b|\s+to\s+\d))',
 ]
 
 # Hard cap: no JD or listing may ask for more than 2 years of experience.
 MAX_JD_EXPERIENCE_YEARS = 2.0
 
 INTERN_PATTERN = re.compile(r'\bintern(?:s|ship)?\b', re.IGNORECASE)
+
+ENTRY_TITLE_SIGNALS = [
+    "new grad", "new-grad", "university", "graduate", "fresher", "entry level",
+    "entry-level", "associate", "junior", "software engineer i",
+    "sde i", "sde-1", "sde 1", "developer i", "engineer i", "engineer 1",
+    "0-1 year", "0-2 year", "1-2 year", "upto 2", "up to 2", "early career",
+]
+
+GENERIC_ENGINEER_TITLES = [
+    "software engineer", "software developer", "backend engineer", "backend developer",
+    "full stack", "fullstack", "full-stack", "sde", "platform engineer",
+    "devops engineer", "machine learning engineer", "ai engineer", "ml engineer",
+]
+
+# e.g. "6+yrs", "9+ years", "5 to 7 years", "6-10 years" in titles
+TITLE_EXPERIENCE_PATTERN = re.compile(
+    r'(?:'
+    r'(?:\d+(?:\.\d+)?)\s*\+\s*(?:yrs?|years?|yr|exp)?'
+    r'|(?:\d+(?:\.\d+)?)\s*(?:-|to|–|—)\s*(?:\d+(?:\.\d+)?)\s*(?:yrs?|years?|yr|y)?'
+    r'|\b(?:\d+(?:\.\d+)?)\s*(?:yrs?|years?)\s*(?:of\s+)?(?:exp|experience)\b'
+    r')',
+    re.IGNORECASE,
+)
 
 
 def _experience_exceeds_cap(min_y: float, max_y: float, cap: float = MAX_JD_EXPERIENCE_YEARS) -> bool:
@@ -99,14 +122,17 @@ def is_job_experience_valid(job_data: dict, max_years: float = MAX_JD_EXPERIENCE
         if re.search(pattern, title_lower):
             return False, f"Title matches excluded level pattern: '{pattern}' in '{title}'"
 
-    title_exp = parse_experience_years(title)
-    if title_exp:
-        min_y, max_y = title_exp
-        if _experience_exceeds_cap(min_y, max_y, cap):
-            return False, (
-                f"Title requires more than {cap} years of experience "
-                f"(parsed {min_y}-{max_y}): '{title}'"
-            )
+    if TITLE_EXPERIENCE_PATTERN.search(title):
+        title_exp = parse_experience_years(title)
+        if title_exp:
+            min_y, max_y = title_exp
+            if _experience_exceeds_cap(min_y, max_y, cap):
+                return False, (
+                    f"Title requires more than {cap} years of experience "
+                    f"(parsed {min_y}-{max_y}): '{title}'"
+                )
+        else:
+            return False, f"Title contains experience requirement pattern: '{title}'"
 
     exp_str = job_data.get("experience_required", "").strip()
     if exp_str:
@@ -144,6 +170,29 @@ def is_job_experience_valid(job_data: dict, max_years: float = MAX_JD_EXPERIENCE
                 )
 
     return True, "Passed experience boundaries check"
+
+
+def is_career_listing_eligible(job_data: dict) -> Tuple[bool, str]:
+    """
+    Stricter gate for direct career-site listings that often lack metadata.
+    Generic engineer titles need entry-level signals or a usable JD.
+    """
+    title_lower = job_data.get("title", "").lower()
+    jd_text = (job_data.get("jd_text") or "").strip()
+
+    if len(jd_text) >= 200:
+        return True, "Has detailed JD"
+
+    if any(sig in title_lower for sig in ENTRY_TITLE_SIGNALS):
+        return True, "Entry-level signals in title"
+
+    if any(g in title_lower for g in GENERIC_ENGINEER_TITLES):
+        return False, (
+            "Generic career-site listing without entry-level signals or JD: "
+            f"'{job_data.get('title', '')}'"
+        )
+
+    return True, "Specific non-generic title"
 
 
 def is_pure_frontend_role(title: str) -> bool:

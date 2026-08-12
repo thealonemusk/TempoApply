@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import List, Tuple
 
-from backend.scrapers.filter_utils import parse_experience_years
+from backend.scrapers.filter_utils import parse_experience_years, ENTRY_TITLE_SIGNALS
 from backend.scrapers.company_list import TOP_COMPANIES
 
 PREMIUM_COMPANIES = {c["name"].lower() for c in TOP_COMPANIES if c.get("type") != "skip"}
@@ -13,12 +13,6 @@ STAFFING_KEYWORDS = [
     "tcs", "tata consultancy", "infosys", "wipro", "cognizant", "hcl ",
     "accenture", "capgemini", "tech mahindra", "ltimindtree", "mphasis",
     "genpact", "cyient", "birlasoft", "persistent systems",
-]
-
-ENTRY_TITLE_SIGNALS = [
-    "new grad", "university", "graduate", "fresher", "entry level",
-    "entry-level", "associate", "junior", "software engineer i",
-    "sde i", "sde-1", "sde 1", "developer i", "engineer i",
 ]
 
 
@@ -56,8 +50,12 @@ def score_job(
     jd_lower = jd_text[:3000].lower()
 
     if platform == "company_careers":
-        score += 22
-        reasons.append("Direct career site")
+        if len(jd_text) >= 200:
+            score += 14
+            reasons.append("Direct career site (with JD)")
+        else:
+            score += 4
+            reasons.append("Direct career site")
     elif platform == "linkedin":
         score += 8
         reasons.append("LinkedIn listing")
@@ -91,7 +89,11 @@ def score_job(
         reasons.append("Target company")
 
     exp_str = job_data.get("experience_required", "")
-    exp_range = parse_experience_years(exp_str) or parse_experience_years(jd_lower)
+    exp_range = (
+        parse_experience_years(exp_str)
+        or parse_experience_years(title_lower)
+        or parse_experience_years(jd_lower)
+    )
     if exp_range:
         min_y, max_y = exp_range
         if min_y <= experience_years + 0.5:
@@ -105,6 +107,9 @@ def score_job(
     if len(jd_text) > 400:
         score += 5
         reasons.append("Detailed JD")
+    elif platform == "company_careers" and len(jd_text) < 80:
+        score -= 10
+        reasons.append("Thin career listing")
 
     if any(s in company for s in STAFFING_KEYWORDS):
         score -= 15

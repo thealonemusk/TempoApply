@@ -3,11 +3,17 @@ Job Pipeline Orchestrator — multi-platform job discovery and experience valida
 """
 import asyncio
 import json
+from datetime import datetime, timedelta
+
 from loguru import logger
 from sqlalchemy.orm import Session
 
 from backend.db.models import Job, SessionLocal
-from backend.scrapers.filter_utils import is_job_experience_valid, is_pure_frontend_role
+from backend.scrapers.filter_utils import (
+    is_job_experience_valid,
+    is_pure_frontend_role,
+    is_career_listing_eligible,
+)
 from backend.scrapers.scoring import score_job
 from backend.scrapers.registry import SCRAPER_REGISTRY, SCRAPER_LABELS, resolve_roles
 from backend.config import settings
@@ -47,6 +53,12 @@ def upsert_jobs(jobs: list, db: Session) -> int:
         if not is_valid:
             logger.info(f"Hard filter excluded [{company} - {title}]: {reason}")
             continue
+
+        if job_data.get("platform") == "company_careers":
+            eligible, reason = is_career_listing_eligible(job_data)
+            if not eligible:
+                logger.info(f"Career listing excluded [{company} - {title}]: {reason}")
+                continue
 
         score, fit_reason = score_job(
             job_data,
@@ -104,6 +116,24 @@ def upsert_jobs(jobs: list, db: Session) -> int:
     return count
 
 
+def purge_stale_discovered_jobs(db: Session, max_age_days: int = 14) -> int:
+    """Remove discovered/scored jobs older than max_age_days."""
+    cutoff = datetime.utcnow() - timedelta(days=max_age_days)
+    stale = db.query(Job).filter(
+        Job.status.in_(["discovered", "scored"]),
+        Job.discovered_at < cutoff,
+    ).all()
+    removed = 0
+    for job in stale:
+        if job.application:
+            db.delete(job.application)
+        db.delete(job)
+        removed += 1
+    if removed:
+        db.commit()
+    return removed
+
+
 async def run_scan_pipeline(
     platforms: list = None,
     max_jobs_per_platform: int = 20,
@@ -149,8 +179,12 @@ async def run_scan_pipeline(
     analyzed_jobs = list(all_raw_jobs)
 
     db = SessionLocal()
+    stale_removed = 0
     try:
         new_count = upsert_jobs(analyzed_jobs, db)
+        stale_removed = purge_stale_discovered_jobs(db, max_age_days=14)
+        if stale_removed:
+            logger.info(f"Purged {stale_removed} stale discovered jobs (>14 days)")
     finally:
         db.close()
 
@@ -158,5 +192,6 @@ async def run_scan_pipeline(
         "total_scraped": len(all_raw_jobs),
         "qualified": len(analyzed_jobs),
         "new_in_db": new_count,
+        "stale_removed": stale_removed,
         "platforms": platforms,
     }

@@ -44,7 +44,7 @@ async def _run_wellfound(roles, max_jobs, headless):
 
 async def _run_company_careers(roles, max_jobs, headless):
     from backend.scrapers.company_careers import scrape_company_career_jobs
-    return await scrape_company_career_jobs(roles=roles, max_jobs=1000)
+    return await scrape_company_career_jobs(roles=roles, max_jobs=max_jobs)
 
 
 SCRAPER_REGISTRY: Dict[str, ScrapeFn] = {
