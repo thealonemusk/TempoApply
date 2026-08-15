@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from loguru import logger
 
+from backend.job_freshness import JOB_FRESHNESS_HOURS
 from backend.db.models import Job, get_db, init_db
 from backend.config import settings
 from backend.platforms import DEFAULT_SCAN_PLATFORMS, SCAN_PLATFORMS, ALL_PLATFORMS
@@ -68,6 +69,7 @@ class JobOut(BaseModel):
     recruiter_profile: str
     status: str
     discovered_at: Optional[datetime]
+    visited_at: Optional[datetime]
     applied_at: Optional[datetime]
 
     class Config:
@@ -76,7 +78,7 @@ class JobOut(BaseModel):
 
 class ScanRequest(BaseModel):
     platforms: List[str] = list(DEFAULT_SCAN_PLATFORMS)
-    max_jobs_per_platform: int = 200
+    max_jobs_per_platform: int = 400
     headless: bool = True
 
 
@@ -101,7 +103,7 @@ def get_jobs(
     status: Optional[str] = Query(None),
     platform: Optional[str] = Query(None),
     min_score: Optional[float] = Query(None),
-    max_age_days: int = Query(14, ge=1),
+    max_age_hours: int = Query(JOB_FRESHNESS_HOURS, ge=1),
     db: Session = Depends(get_db),
 ):
     """Get all jobs with optional filters. Hides stale discovered/scored jobs by default."""
@@ -113,7 +115,7 @@ def get_jobs(
     if min_score is not None:
         query = query.filter(Job.relevance_score >= min_score)
 
-    cutoff = datetime.utcnow() - timedelta(days=max_age_days)
+    cutoff = datetime.utcnow() - timedelta(hours=max_age_hours)
     query = query.filter(
         (Job.status.notin_(["discovered", "scored"])) | (Job.discovered_at >= cutoff)
     )
@@ -172,6 +174,18 @@ def update_job_status(job_id: str, update: StatusUpdate, db: Session = Depends(g
     return {"success": True, "status": update.status}
 
 
+@app.post("/api/jobs/{job_id}/visit")
+def mark_job_visited(job_id: str, db: Session = Depends(get_db)):
+    """Mark a job as visited when the user opens the posting link."""
+    job = db.query(Job).filter(Job.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if not job.visited_at:
+        job.visited_at = datetime.utcnow()
+        db.commit()
+    return {"success": True, "visited_at": job.visited_at}
+
+
 @app.delete("/api/jobs/clear")
 def clear_discovered_jobs(db: Session = Depends(get_db)):
     """Delete all jobs that are still in 'discovered' or 'scored' status to declutter the dashboard."""
@@ -188,13 +202,13 @@ def clear_discovered_jobs(db: Session = Depends(get_db)):
 
 @app.post("/api/jobs/purge-stale")
 def purge_stale_jobs(
-    max_age_days: int = Query(14, ge=1),
+    max_age_hours: int = Query(JOB_FRESHNESS_HOURS, ge=1),
     db: Session = Depends(get_db),
 ):
-    """Delete discovered/scored jobs older than max_age_days."""
+    """Delete discovered/scored jobs older than max_age_hours."""
     from backend.pipeline import purge_stale_discovered_jobs
 
-    purged_count = purge_stale_discovered_jobs(db, max_age_days=max_age_days)
+    purged_count = purge_stale_discovered_jobs(db, max_age_hours=max_age_hours)
     return {"success": True, "purged_count": purged_count}
 
 

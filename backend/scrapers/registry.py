@@ -16,6 +16,20 @@ _FALLBACK_ROLES = [
     "Machine Learning Engineer",
 ]
 
+# Extra roles searched during discovery (user target_roles still drive scoring priority).
+_DISCOVERY_EXTRA_ROLES = [
+    "Associate Software Engineer",
+    "Junior Software Engineer",
+    "Entry Level Software Engineer",
+    "Python Developer",
+    "Java Developer",
+    "Golang Developer",
+    "React Developer",
+    "Node.js Developer",
+    "Cloud Engineer",
+    "Data Engineer",
+]
+
 
 async def _run_linkedin(roles, max_jobs, headless):
     from backend.scrapers.linkedin import scrape_linkedin_jobs
@@ -70,3 +84,15 @@ SCRAPER_LABELS = {
 def resolve_roles(settings_roles: List[str]) -> List[str]:
     roles = [r.strip() for r in settings_roles if r.strip()]
     return roles if roles else list(_FALLBACK_ROLES)
+
+
+def resolve_discovery_roles(settings_roles: List[str]) -> List[str]:
+    """Broader role list for scraping; keeps user roles first for priority."""
+    merged: List[str] = []
+    seen: set = set()
+    for role in list(settings_roles) + _FALLBACK_ROLES + _DISCOVERY_EXTRA_ROLES:
+        key = role.lower().strip()
+        if key and key not in seen:
+            seen.add(key)
+            merged.append(role.strip())
+    return merged if merged else list(_FALLBACK_ROLES)

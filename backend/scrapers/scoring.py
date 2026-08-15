@@ -59,6 +59,9 @@ def score_job(
     elif platform == "linkedin":
         score += 8
         reasons.append("LinkedIn listing")
+    elif platform == "naukri":
+        score += 10
+        reasons.append("Naukri (0-2 yr filter)")
 
     exact, partial = _title_matches_role(title, target_roles)
     if exact:

@@ -13,7 +13,9 @@ from loguru import logger
 
 from backend.scrapers.base import normalize_job
 from backend.scrapers.filter_utils import is_job_experience_valid
+from backend.scrapers.registry import resolve_discovery_roles
 from backend.config import settings
+from backend.job_freshness import LINKEDIN_TIME_FILTER
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -23,13 +25,15 @@ HEADERS = {"User-Agent": USER_AGENT}
 
 # Broader India coverage beyond user settings (scoring still ranks preferred cities).
 EXTRA_LOCATIONS = [
+    "India",
     "Bengaluru", "Bangalore", "Hyderabad", "Pune", "Mumbai",
-    "Gurugram", "Gurgaon", "Noida", "Delhi", "Chennai", "Remote",
+    "Gurugram", "Gurgaon", "Noida", "Delhi", "Chennai", "Kolkata",
+    "Remote", "Work from Home",
 ]
 
-LINKEDIN_PAGES = 5
+LINKEDIN_PAGES = 12
 PAGE_SIZE = 10
-JD_WORKERS = 8
+JD_WORKERS = 12
 
 
 def _merge_locations(locations: List[str]) -> List[str]:
@@ -50,10 +54,18 @@ def _search_queries(role: str) -> List[str]:
         return []
     queries = [base]
     lower = base.lower()
-    if "fresher" not in lower and "entry" not in lower and "junior" not in lower:
-        queries.append(f"{base} entry level")
-        queries.append(f"junior {base}")
-    return queries
+    variants = [
+        "entry level",
+        "junior",
+        "fresher",
+        "associate",
+        "0-2 years",
+        "new grad",
+    ]
+    for variant in variants:
+        if variant not in lower:
+            queries.append(f"{base} {variant}")
+    return queries[:6]
 
 
 def _parse_search_cards(html: str) -> List[dict]:
@@ -83,11 +95,11 @@ def _parse_search_cards(html: str) -> List[dict]:
     return results
 
 
-def _fetch_search_page(keywords: str, location: str, start: int) -> List[dict]:
+def _fetch_search_page(keywords: str, location: str, start: int, time_filter: str) -> List[dict]:
     params = urllib.parse.urlencode({
         "keywords": keywords,
         "location": location,
-        "f_TPR": "r604800",  # Last 7 days
+        "f_TPR": time_filter,
         "start": start,
     })
     url = f"https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search?{params}"
@@ -119,43 +131,49 @@ def _collect_listings(
     seen_urls: Set[str] = set()
     listings: List[dict] = []
 
-    for role in roles:
-        for query in _search_queries(role):
-            for location in locations:
-                for page in range(LINKEDIN_PAGES):
-                    start = page * PAGE_SIZE
-                    try:
-                        batch = _fetch_search_page(query, location, start)
-                    except Exception as exc:
-                        logger.debug(f"LinkedIn page failed for '{query}' / '{location}' @ {start}: {exc}")
-                        break
+    for time_filter in [LINKEDIN_TIME_FILTER]:
+        for role in roles:
+            for query in _search_queries(role):
+                for location in locations:
+                    for page in range(LINKEDIN_PAGES):
+                        start = page * PAGE_SIZE
+                        try:
+                            batch = _fetch_search_page(query, location, start, time_filter)
+                        except Exception as exc:
+                            logger.debug(
+                                f"LinkedIn page failed for '{query}' / '{location}' @ {start}: {exc}"
+                            )
+                            break
 
-                    if not batch:
-                        break
+                        if not batch:
+                            break
 
-                    for item in batch:
-                        url = item["url"]
-                        if url in seen_urls:
-                            continue
-                        seen_urls.add(url)
+                        for item in batch:
+                            url = item["url"]
+                            if url in seen_urls:
+                                continue
+                            seen_urls.add(url)
 
-                        preview = {
-                            "title": item["title"],
-                            "company": item["company"],
-                            "location": item["location"] or location,
-                            "url": url,
-                            "jd_text": "",
-                        }
-                        ok, _ = is_job_experience_valid(preview)
-                        if not ok:
-                            continue
+                            preview = {
+                                "title": item["title"],
+                                "company": item["company"],
+                                "location": item["location"] or location,
+                                "url": url,
+                                "jd_text": "",
+                            }
+                            ok, _ = is_job_experience_valid(preview)
+                            if not ok:
+                                continue
 
-                        listings.append(preview)
-                        if len(listings) >= max_jobs:
-                            return listings
+                            listings.append(preview)
+                            if len(listings) >= max_jobs:
+                                return listings
 
-                    if len(batch) < PAGE_SIZE:
-                        break
+                        if len(batch) < PAGE_SIZE:
+                            break
+
+        if len(listings) >= max_jobs // 2:
+            break
 
     return listings
 
@@ -180,14 +198,14 @@ def _enrich_listings(listings: List[dict]) -> List[dict]:
 async def scrape_linkedin_jobs(
     roles: List[str] = None,
     locations: List[str] = None,
-    max_jobs: int = 200,
+    max_jobs: int = 500,
     headless: bool = True,
 ) -> List[dict]:
     """
     Main LinkedIn scraper entry point.
     Returns list of normalized job dicts.
     """
-    roles = roles or settings.target_roles_list
+    roles = resolve_discovery_roles(roles or settings.target_roles_list)
     locations = _merge_locations(locations or settings.preferred_locations_list)
 
     logger.info(f"LinkedIn: searching {len(roles)} roles across {len(locations)} locations")

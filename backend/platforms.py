@@ -1,8 +1,9 @@
 """Platform constants — single source of truth for scan targets."""
 
-# Default scan: LinkedIn + direct company career sites
+# Default scan: LinkedIn + Naukri + direct company career sites
 SCAN_PLATFORMS = [
     "linkedin",
+    "naukri",
     "company_careers",
 ]
 

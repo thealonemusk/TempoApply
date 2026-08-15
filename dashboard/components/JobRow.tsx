@@ -1,9 +1,10 @@
 'use client';
 
+import clsx from 'clsx';
 import { motion } from 'framer-motion';
-import { ExternalLink } from 'lucide-react';
+import { Check, ExternalLink } from 'lucide-react';
 import { Job } from '@/lib/types';
-import { PlatformBadge, ScoreBadge } from '@/components/ui/Badge';
+import { PlatformBadge, ScoreBadge, VisitedBadge } from '@/components/ui/Badge';
 
 const STATUS_OPTIONS = [
   'discovered',
@@ -20,9 +21,11 @@ interface JobRowProps {
   job: Job;
   index?: number;
   onStatusChange: (id: string, status: string) => void;
+  onVisit: (id: string) => void;
 }
 
-export function JobRow({ job, index = 0, onStatusChange }: JobRowProps) {
+export function JobRow({ job, index = 0, onStatusChange, onVisit }: JobRowProps) {
+  const visited = Boolean(job.visited_at);
   const date = job.discovered_at
     ? new Date(job.discovered_at).toLocaleDateString('en-US', {
         month: 'short',
@@ -35,11 +38,26 @@ export function JobRow({ job, index = 0, onStatusChange }: JobRowProps) {
       initial={{ opacity: 0, y: 6 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ delay: index * 0.02, duration: 0.2 }}
-      className="group border-b border-[var(--border)] transition-colors hover:bg-[var(--surface-2)]"
+      className={clsx(
+        'group border-b border-[var(--border)] transition-colors',
+        visited
+          ? 'bg-[var(--surface-2)]/60 opacity-75'
+          : 'hover:bg-[var(--surface-2)]',
+      )}
     >
       <td className="px-4 py-3">
         <div className="min-w-0">
-          <p className="truncate text-sm font-medium text-[var(--text-primary)]">{job.title}</p>
+          <div className="flex items-center gap-2">
+            <p
+              className={clsx(
+                'truncate text-sm font-medium',
+                visited ? 'text-[var(--text-muted)]' : 'text-[var(--text-primary)]',
+              )}
+            >
+              {job.title}
+            </p>
+            {visited && <VisitedBadge />}
+          </div>
           <p className="truncate text-xs text-[var(--text-muted)]">
             {job.company}
             {job.location ? ` · ${job.location}` : ''}
@@ -71,10 +89,16 @@ export function JobRow({ job, index = 0, onStatusChange }: JobRowProps) {
           href={job.url}
           target="_blank"
           rel="noopener noreferrer"
-          className="inline-flex rounded-lg p-2 text-[var(--text-muted)] opacity-0 transition-all hover:bg-[var(--surface-3)] hover:text-[var(--accent)] group-hover:opacity-100"
-          title="Open posting"
+          onClick={() => !visited && onVisit(job.id)}
+          className={clsx(
+            'inline-flex rounded-lg p-2 transition-all group-hover:opacity-100',
+            visited
+              ? 'text-[var(--success)] opacity-100'
+              : 'text-[var(--text-muted)] opacity-0 hover:bg-[var(--surface-3)] hover:text-[var(--accent)]',
+          )}
+          title={visited ? 'Already visited' : 'Open posting'}
         >
-          <ExternalLink className="h-4 w-4" />
+          {visited ? <Check className="h-4 w-4" /> : <ExternalLink className="h-4 w-4" />}
         </a>
       </td>
     </motion.tr>

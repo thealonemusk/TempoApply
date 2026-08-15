@@ -27,8 +27,7 @@ HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 }
 
-# Career boards: keep a tight freshness window (stale listings are common).
-FRESHNESS_DAYS = 7
+from backend.job_freshness import JOB_FRESHNESS_HOURS
 
 # Extra title aliases beyond the pipeline role strings (SDE, fullstack, etc.)
 ROLE_ALIASES = [
@@ -59,9 +58,9 @@ ROLE_ALIASES = [
 
 
 def _is_fresh(timestamp_str: Optional[str] = None, timestamp_ms: Optional[int] = None) -> bool:
-    """Check if job is fresh (posted/updated within FRESHNESS_DAYS)."""
+    """Check if job is fresh (posted/updated within JOB_FRESHNESS_HOURS)."""
     now = datetime.now(timezone.utc)
-    cutoff = now - timedelta(days=FRESHNESS_DAYS)
+    cutoff = now - timedelta(hours=JOB_FRESHNESS_HOURS)
 
     if timestamp_str:
         try:
@@ -98,11 +97,11 @@ def _is_workday_posting_fresh(posted_on: str) -> bool:
 
     days_match = re.search(r"(\d+)\s*\+?\s*days?", s)
     if days_match:
-        return int(days_match.group(1)) <= FRESHNESS_DAYS
+        return int(days_match.group(1)) * 24 <= JOB_FRESHNESS_HOURS
 
     weeks_match = re.search(r"(\d+)\s*weeks?", s)
     if weeks_match:
-        return int(weeks_match.group(1)) * 7 <= FRESHNESS_DAYS
+        return int(weeks_match.group(1)) * 7 * 24 <= JOB_FRESHNESS_HOURS
 
     if "30+" in s or "month" in s or "months" in s:
         return False
@@ -301,7 +300,7 @@ def _scrape_lever(company: dict, roles: List[str]) -> List[dict]:
 
 WORKDAY_WD_SHARDS = ["wd1", "wd3", "wd5", "wd12", "wd103"]
 WORKDAY_PAGE_SIZE = 20  # API returns HTTP 400 above ~20 for most tenants
-WORKDAY_MAX_PAGES = 3
+WORKDAY_MAX_PAGES = 5
 
 
 def _workday_host_candidates(tenant: str, wd_hint: Optional[str] = None) -> List[str]:
@@ -535,7 +534,11 @@ def _expanded_search_roles(roles: List[str]) -> List[str]:
     """Add entry-focused variants for career-site search APIs."""
     expanded: List[str] = []
     seen: set = set()
-    extras = ["new grad", "university graduate", "entry level", "SDE 1", "associate engineer"]
+    extras = [
+        "new grad", "university graduate", "entry level", "SDE 1", "associate engineer",
+        "junior software engineer", "graduate engineer", "early career", "fresher",
+        "software engineer I", "associate software engineer",
+    ]
     for role in list(roles) + extras:
         key = role.lower().strip()
         if key and key not in seen:
@@ -546,11 +549,11 @@ def _expanded_search_roles(roles: List[str]) -> List[str]:
 
 async def scrape_company_career_jobs(
     roles: List[str] = None,
-    max_jobs: int = 1000,
+    max_jobs: int = 500,
     companies: List[dict] = None,
 ) -> List[dict]:
     """
-    Scrape company career sites for matching jobs posted in the last FRESHNESS_DAYS days.
+    Scrape company career sites for matching jobs posted in the last 72 hours.
 
     Args:
         roles: List of target role strings (e.g. ['Software Engineer', 'Backend Engineer'])
@@ -562,7 +565,8 @@ async def scrape_company_career_jobs(
     """
     if roles is None:
         from backend.config import settings
-        roles = settings.target_roles_list
+        from backend.scrapers.registry import resolve_discovery_roles
+        roles = resolve_discovery_roles(settings.target_roles_list)
 
     search_roles = _expanded_search_roles(roles)
     company_list = companies or TOP_COMPANIES

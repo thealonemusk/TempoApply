@@ -27,6 +27,7 @@ export interface Job {
   recruiter_profile: string;
   status: JobStatus;
   discovered_at: string | null;
+  visited_at: string | null;
   applied_at: string | null;
 }
 

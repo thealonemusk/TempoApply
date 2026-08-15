@@ -12,6 +12,7 @@ import json
 
 from backend.scrapers.base import normalize_job
 from backend.config import settings
+from backend.job_freshness import INDEED_FROMAGE_DAYS
 
 def _scrape_job_detail_bs4(url: str) -> dict:
     try:
@@ -64,7 +65,7 @@ async def scrape_indeed_jobs(
                     f"?q={query}"
                     f"&l={loc}"
                     f"&sc=0kf%3Aexplvl(ENTRY_LEVEL)%3B" # Entry Level / <2 yrs
-                    f"&sort=date&fromage=1"  # Last 1 day
+                    f"&sort=date&fromage={INDEED_FROMAGE_DAYS}"
                 )
                 
                 resp = await asyncio.to_thread(requests.get, search_url, headers=headers, timeout=15)

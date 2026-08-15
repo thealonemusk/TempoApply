@@ -76,6 +76,18 @@ export default function JobsPage() {
     setJobs((prev) => prev.map((j) => (j.id === id ? { ...j, status: status as Job['status'] } : j)));
   };
 
+  const handleVisit = async (id: string) => {
+    const visitedAt = new Date().toISOString();
+    setJobs((prev) =>
+      prev.map((j) => (j.id === id && !j.visited_at ? { ...j, visited_at: visitedAt } : j)),
+    );
+    try {
+      await api.markJobVisited(id);
+    } catch {
+      // Keep optimistic visited state
+    }
+  };
+
   const handleAddManual = async () => {
     await api.addManualJob(manualForm);
     setAddOpen(false);
@@ -105,6 +117,10 @@ export default function JobsPage() {
 
   const sorted = useMemo(() => {
     return [...filtered].sort((a, b) => {
+      const aVisited = a.visited_at ? 1 : 0;
+      const bVisited = b.visited_at ? 1 : 0;
+      if (aVisited !== bVisited) return aVisited - bVisited;
+
       if (sortBy === 'score') {
         const diff = (b.relevance_score || 0) - (a.relevance_score || 0);
         if (diff !== 0) return sortOrder === 'desc' ? diff : -diff;
@@ -128,6 +144,7 @@ export default function JobsPage() {
 
   const pendingStatuses: Job['status'][] = ['discovered', 'scored'];
   const pendingCount = jobs.filter((j) => pendingStatuses.includes(j.status)).length;
+  const visitedCount = jobs.filter((j) => j.visited_at).length;
 
   return (
     <>
@@ -138,6 +155,7 @@ export default function JobsPage() {
             <p className="mt-0.5 text-sm text-[var(--text-muted)]">
               {jobs.length} total
               {pendingCount > 0 && ` · ${pendingCount} pending`}
+              {visitedCount > 0 && ` · ${visitedCount} visited`}
               {scanning && ' · scanning…'}
             </p>
           </div>
@@ -233,7 +251,13 @@ export default function JobsPage() {
                     </thead>
                     <tbody>
                       {pageJobs.map((job, i) => (
-                        <JobRow key={job.id} job={job} index={i} onStatusChange={handleStatusChange} />
+                        <JobRow
+                          key={job.id}
+                          job={job}
+                          index={i}
+                          onStatusChange={handleStatusChange}
+                          onVisit={handleVisit}
+                        />
                       ))}
                     </tbody>
                   </table>

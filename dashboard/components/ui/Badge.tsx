@@ -31,3 +31,11 @@ export function ScoreBadge({ score }: { score: number }) {
     </span>
   );
 }
+
+export function VisitedBadge() {
+  return (
+    <span className="inline-flex items-center rounded-lg bg-[var(--surface-3)] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">
+      Visited
+    </span>
+  );
+}

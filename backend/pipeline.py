@@ -15,9 +15,10 @@ from backend.scrapers.filter_utils import (
     is_career_listing_eligible,
 )
 from backend.scrapers.scoring import score_job
-from backend.scrapers.registry import SCRAPER_REGISTRY, SCRAPER_LABELS, resolve_roles
+from backend.scrapers.registry import SCRAPER_REGISTRY, SCRAPER_LABELS, resolve_discovery_roles
 from backend.config import settings
 from backend.platforms import DEFAULT_SCAN_PLATFORMS
+from backend.job_freshness import JOB_FRESHNESS_HOURS
 
 
 def upsert_jobs(jobs: list, db: Session) -> int:
@@ -116,9 +117,26 @@ def upsert_jobs(jobs: list, db: Session) -> int:
     return count
 
 
-def purge_stale_discovered_jobs(db: Session, max_age_days: int = 14) -> int:
-    """Remove discovered/scored jobs older than max_age_days."""
-    cutoff = datetime.utcnow() - timedelta(days=max_age_days)
+def purge_visited_jobs(db: Session) -> int:
+    """Remove jobs the user opened (visited) that are still in the review queue."""
+    visited = db.query(Job).filter(
+        Job.visited_at.isnot(None),
+        Job.status.in_(["discovered", "scored", "tailored", "ignored"]),
+    ).all()
+    removed = 0
+    for job in visited:
+        if job.application:
+            db.delete(job.application)
+        db.delete(job)
+        removed += 1
+    if removed:
+        db.commit()
+    return removed
+
+
+def purge_stale_discovered_jobs(db: Session, max_age_hours: int = JOB_FRESHNESS_HOURS) -> int:
+    """Remove discovered/scored jobs older than max_age_hours."""
+    cutoff = datetime.utcnow() - timedelta(hours=max_age_hours)
     stale = db.query(Job).filter(
         Job.status.in_(["discovered", "scored"]),
         Job.discovered_at < cutoff,
@@ -136,15 +154,15 @@ def purge_stale_discovered_jobs(db: Session, max_age_days: int = 14) -> int:
 
 async def run_scan_pipeline(
     platforms: list = None,
-    max_jobs_per_platform: int = 20,
+    max_jobs_per_platform: int = 400,
     headless: bool = True,
 ) -> dict:
     """
     Run job discovery: scrape selected platforms, apply filters, store in DB.
     """
     platforms = platforms or list(DEFAULT_SCAN_PLATFORMS)
-    roles = resolve_roles(settings.target_roles_list)
-    logger.info(f"Targeting roles: {roles}")
+    roles = resolve_discovery_roles(settings.target_roles_list)
+    logger.info(f"Targeting roles (discovery): {roles}")
 
     all_raw_jobs = []
     tasks = []
@@ -180,11 +198,16 @@ async def run_scan_pipeline(
 
     db = SessionLocal()
     stale_removed = 0
+    visited_removed = 0
     try:
+        visited_removed = purge_visited_jobs(db)
+        if visited_removed:
+            logger.info(f"Removed {visited_removed} previously visited jobs")
+
         new_count = upsert_jobs(analyzed_jobs, db)
-        stale_removed = purge_stale_discovered_jobs(db, max_age_days=14)
+        stale_removed = purge_stale_discovered_jobs(db, max_age_hours=JOB_FRESHNESS_HOURS)
         if stale_removed:
-            logger.info(f"Purged {stale_removed} stale discovered jobs (>14 days)")
+            logger.info(f"Purged {stale_removed} stale discovered jobs (>{JOB_FRESHNESS_HOURS}h)")
     finally:
         db.close()
 
@@ -192,6 +215,7 @@ async def run_scan_pipeline(
         "total_scraped": len(all_raw_jobs),
         "qualified": len(analyzed_jobs),
         "new_in_db": new_count,
+        "visited_removed": visited_removed,
         "stale_removed": stale_removed,
         "platforms": platforms,
     }

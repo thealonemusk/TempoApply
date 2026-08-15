@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, Column, String, Integer, Float, Text, DateTime, ForeignKey, Boolean
+from sqlalchemy import create_engine, Column, String, Integer, Float, Text, DateTime, ForeignKey, Boolean, text
 from sqlalchemy.orm import DeclarativeBase, relationship, sessionmaker
 from sqlalchemy.sql import func
 from datetime import datetime
@@ -42,6 +42,7 @@ class Job(Base):
     recruiter_profile = Column(String, default="")
     # Timestamps
     discovered_at = Column(DateTime, default=func.now())
+    visited_at = Column(DateTime, nullable=True)
     applied_at = Column(DateTime, nullable=True)
     last_updated = Column(DateTime, default=func.now(), onupdate=func.now())
 
@@ -85,4 +86,15 @@ def get_db():
 
 def init_db():
     Base.metadata.create_all(bind=engine)
+    _migrate_db()
     print("Database initialized (SQLite)")
+
+
+def _migrate_db():
+    """Add columns to existing SQLite DBs without Alembic."""
+    with engine.connect() as conn:
+        cols = conn.execute(text("PRAGMA table_info(jobs)")).fetchall()
+        col_names = {row[1] for row in cols}
+        if "visited_at" not in col_names:
+            conn.execute(text("ALTER TABLE jobs ADD COLUMN visited_at DATETIME"))
+            conn.commit()

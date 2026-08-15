@@ -16,7 +16,7 @@ export const api = {
 
   getScanStatus: () => request<ScanStatus>('/api/scan/status'),
 
-  startScan: (platforms = DEFAULT_SCAN_PLATFORMS, maxJobs = 40) =>
+  startScan: (platforms = DEFAULT_SCAN_PLATFORMS, maxJobs = 400) =>
     request<{ message: string }>('/api/scan', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -32,6 +32,11 @@ export const api = {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ status }),
+    }),
+
+  markJobVisited: (id: string) =>
+    request<{ success: boolean; visited_at: string }>(`/api/jobs/${id}/visit`, {
+      method: 'POST',
     }),
 
   addManualJob: (job: {

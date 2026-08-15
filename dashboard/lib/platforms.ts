@@ -20,6 +20,7 @@ export const PLATFORM_COLORS: Record<string, string> = {
 
 export const DEFAULT_SCAN_PLATFORMS = [
   'linkedin',
+  'naukri',
   'company_careers',
 ];
 
