@@ -2,9 +2,9 @@
 
 import clsx from 'clsx';
 import { motion } from 'framer-motion';
-import { Check, ExternalLink } from 'lucide-react';
+import { Check, ExternalLink, Send } from 'lucide-react';
 import { Job } from '@/lib/types';
-import { PlatformBadge, ScoreBadge, VisitedBadge } from '@/components/ui/Badge';
+import { ApplyStatusBadge, AtsBadge, PlatformBadge, ScoreBadge, VisitedBadge } from '@/components/ui/Badge';
 
 const STATUS_OPTIONS = [
   'discovered',
@@ -20,12 +20,26 @@ const STATUS_OPTIONS = [
 interface JobRowProps {
   job: Job;
   index?: number;
+  applying?: boolean;
+  applyBusy?: boolean;
   onStatusChange: (id: string, status: string) => void;
   onVisit: (id: string) => void;
+  onApply: (id: string) => void;
+  alwaysShowOpen?: boolean;
 }
 
-export function JobRow({ job, index = 0, onStatusChange, onVisit }: JobRowProps) {
+export function JobRow({
+  job,
+  index = 0,
+  applying = false,
+  applyBusy = false,
+  onStatusChange,
+  onVisit,
+  onApply,
+  alwaysShowOpen = false,
+}: JobRowProps) {
   const visited = Boolean(job.visited_at);
+  const alreadyApplied = job.status === 'applied' || job.apply_status === 'applied';
   const date = job.discovered_at
     ? new Date(job.discovered_at).toLocaleDateString('en-US', {
         month: 'short',
@@ -57,15 +71,24 @@ export function JobRow({ job, index = 0, onStatusChange, onVisit }: JobRowProps)
               {job.title}
             </p>
             {visited && <VisitedBadge />}
+            <ApplyStatusBadge status={applying ? 'applying' : job.apply_status} />
           </div>
           <p className="truncate text-xs text-[var(--text-muted)]">
             {job.company}
             {job.location ? ` · ${job.location}` : ''}
           </p>
+          {job.apply_error && job.apply_status && job.apply_status !== 'applied' && (
+            <p className="mt-0.5 max-w-md truncate text-[11px] text-[var(--danger)]" title={job.apply_error}>
+              {job.apply_error}
+            </p>
+          )}
         </div>
       </td>
       <td className="px-4 py-3">
-        <PlatformBadge platform={job.platform} />
+        <div className="flex flex-col items-start gap-1">
+          <PlatformBadge platform={job.platform} />
+          <AtsBadge ats={job.ats_type} />
+        </div>
       </td>
       <td className="px-4 py-3 text-center">
         <ScoreBadge score={job.relevance_score} />
@@ -85,21 +108,41 @@ export function JobRow({ job, index = 0, onStatusChange, onVisit }: JobRowProps)
       </td>
       <td className="px-4 py-3 text-xs text-[var(--text-muted)]">{date}</td>
       <td className="px-4 py-3 text-right">
-        <a
-          href={job.url}
-          target="_blank"
-          rel="noopener noreferrer"
-          onClick={() => !visited && onVisit(job.id)}
-          className={clsx(
-            'inline-flex rounded-lg p-2 transition-all group-hover:opacity-100',
-            visited
-              ? 'text-[var(--success)] opacity-100'
-              : 'text-[var(--text-muted)] opacity-0 hover:bg-[var(--surface-3)] hover:text-[var(--accent)]',
-          )}
-          title={visited ? 'Already visited' : 'Open posting'}
-        >
-          {visited ? <Check className="h-4 w-4" /> : <ExternalLink className="h-4 w-4" />}
-        </a>
+        <div className="inline-flex items-center gap-1">
+          <button
+            type="button"
+            disabled={applyBusy || alreadyApplied}
+            onClick={() => onApply(job.id)}
+            title={alreadyApplied ? 'Already applied' : 'Auto-apply'}
+            className={clsx(
+              'inline-flex rounded-lg p-2 transition-all',
+              alreadyApplied
+                ? 'text-[var(--success)]'
+                : applyBusy
+                  ? 'text-[var(--text-muted)] opacity-40'
+                  : 'text-[var(--text-muted)] hover:bg-[var(--surface-3)] hover:text-[var(--accent)] group-hover:opacity-100 opacity-0',
+            )}
+          >
+            <Send className="h-4 w-4" />
+          </button>
+          <a
+            href={job.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={() => !visited && onVisit(job.id)}
+            className={clsx(
+              'inline-flex rounded-lg p-2 transition-all',
+              visited
+                ? 'text-[var(--success)] opacity-100'
+                : alwaysShowOpen
+                  ? 'text-[var(--accent)] opacity-100 hover:bg-[var(--surface-3)]'
+                  : 'text-[var(--text-muted)] opacity-0 hover:bg-[var(--surface-3)] hover:text-[var(--accent)] group-hover:opacity-100',
+            )}
+            title={alwaysShowOpen ? 'Open and fill manually' : visited ? 'Already visited' : 'Open posting'}
+          >
+            {visited ? <Check className="h-4 w-4" /> : <ExternalLink className="h-4 w-4" />}
+          </a>
+        </div>
       </td>
     </motion.tr>
   );

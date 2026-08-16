@@ -206,6 +206,7 @@ def _scrape_greenhouse(company: dict, roles: List[str]) -> List[dict]:
                 "url": job_url,
                 "jd_text": jd_text,
                 "easy_apply": True,
+                "ats_type": "greenhouse",
             }, "company_careers"))
 
         filtered = []
@@ -285,6 +286,7 @@ def _scrape_lever(company: dict, roles: List[str]) -> List[dict]:
                 "url": job_url,
                 "jd_text": jd_text,
                 "easy_apply": True,
+                "ats_type": "lever",
             }, "company_careers"))
 
         filtered = []
@@ -439,6 +441,7 @@ def _scrape_workday(company: dict, roles: List[str]) -> List[dict]:
                     "url": job_url,
                     "jd_text": jd_text,
                     "easy_apply": False,
+                    "ats_type": "workday",
                 }, "company_careers")
 
                 if _passes_career_filters(job_data):
@@ -514,6 +517,7 @@ def _scrape_custom(company: dict, roles: List[str]) -> List[dict]:
                 "url": full_url,
                 "jd_text": "",    # would need another request per job
                 "easy_apply": False,
+                "ats_type": "custom",
             }, "company_careers"))
 
         filtered = []

@@ -11,9 +11,9 @@ from datetime import datetime, timedelta
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
-from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, Query
+from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, Query, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlalchemy.orm import Session
 from loguru import logger
 
@@ -21,6 +21,8 @@ from backend.job_freshness import JOB_FRESHNESS_HOURS
 from backend.db.models import Job, get_db, init_db
 from backend.config import settings
 from backend.platforms import DEFAULT_SCAN_PLATFORMS, SCAN_PLATFORMS, ALL_PLATFORMS
+from backend.applier.ats import detect_ats
+from backend.applier.profile import RESUMES_DIR, load_profile, save_profile
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
@@ -68,12 +70,20 @@ class JobOut(BaseModel):
     recruiter_name: str
     recruiter_profile: str
     status: str
+    ats_type: Optional[str] = ""
+    apply_status: Optional[str] = ""
+    apply_error: Optional[str] = ""
     discovered_at: Optional[datetime]
     visited_at: Optional[datetime]
     applied_at: Optional[datetime]
 
     class Config:
         from_attributes = True
+
+    @field_validator("ats_type", "apply_status", "apply_error", mode="before")
+    @classmethod
+    def blank_apply_fields(cls, value):
+        return value or ""
 
 
 class ScanRequest(BaseModel):
@@ -85,6 +95,12 @@ class ScanRequest(BaseModel):
 class StatusUpdate(BaseModel):
     status: str
     notes: Optional[str] = None
+
+
+class ApplyRequest(BaseModel):
+    job_ids: Optional[List[str]] = None
+    auto_submit: bool = True
+    headless: bool = True
 
 
 class ManualJobRequest(BaseModel):
@@ -119,7 +135,21 @@ def get_jobs(
     query = query.filter(
         (Job.status.notin_(["discovered", "scored"])) | (Job.discovered_at >= cutoff)
     )
-    return query.order_by(Job.relevance_score.desc()).all()
+    jobs = query.order_by(Job.relevance_score.desc()).all()
+    dirty = False
+    for job in jobs:
+        if not job.ats_type:
+            job.ats_type = detect_ats(job.url)
+            dirty = True
+        if job.apply_status is None:
+            job.apply_status = ""
+            dirty = True
+        if job.apply_error is None:
+            job.apply_error = ""
+            dirty = True
+    if dirty:
+        db.commit()
+    return jobs
 
 
 @app.get("/api/jobs/{job_id}", response_model=JobOut)
@@ -127,6 +157,9 @@ def get_job(job_id: str, db: Session = Depends(get_db)):
     job = db.query(Job).filter(Job.id == job_id).first()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
+    if not job.ats_type:
+        job.ats_type = detect_ats(job.url)
+        db.commit()
     return job
 
 
@@ -153,6 +186,7 @@ def add_manual_job(req: ManualJobRequest, db: Session = Depends(get_db)):
         seniority_level="entry",
         is_engineering_role=True,
         status="discovered",
+        ats_type=detect_ats(req.url),
     )
     db.add(job)
     db.commit()
@@ -285,6 +319,92 @@ async def start_scan(req: ScanRequest, background_tasks: BackgroundTasks):
 @app.get("/api/scan/status")
 def get_scan_status():
     return _scan_status
+
+
+# ─── Auto-apply ──────────────────────────────────────────────────────────────
+
+_apply_status = {"running": False, "last_result": None, "current_job": None}
+
+
+@app.get("/api/profile")
+def get_profile():
+    profile = load_profile()
+    data = profile.to_dict()
+    data["missing"] = profile.missing_required()
+    data["has_resume"] = profile.resume_file() is not None
+    data["ready_to_apply"] = not data["missing"]
+    return data
+
+
+@app.put("/api/profile")
+def update_profile(payload: dict):
+    profile = save_profile(payload)
+    data = profile.to_dict()
+    data["missing"] = profile.missing_required()
+    data["has_resume"] = profile.resume_file() is not None
+    data["ready_to_apply"] = not data["missing"]
+    return data
+
+
+@app.post("/api/profile/resume")
+async def upload_resume_file(file: UploadFile = File(...)):
+    suffix = Path(file.filename or "resume.pdf").suffix.lower()
+    if suffix not in {".pdf", ".doc", ".docx"}:
+        raise HTTPException(status_code=400, detail="Resume must be PDF, DOC, or DOCX")
+    RESUMES_DIR.mkdir(parents=True, exist_ok=True)
+    dest = RESUMES_DIR / f"resume{suffix}"
+    dest.write_bytes(await file.read())
+    rel = f"resumes/resume{suffix}"
+    save_profile({"resume_path": rel})
+    return {"success": True, "resume_path": rel}
+
+
+@app.get("/api/apply/status")
+def get_apply_status():
+    return _apply_status
+
+
+@app.post("/api/apply")
+async def start_apply(req: ApplyRequest, background_tasks: BackgroundTasks):
+    if _apply_status["running"]:
+        raise HTTPException(status_code=409, detail="Apply already running")
+    if _scan_status["running"]:
+        raise HTTPException(status_code=409, detail="Scan is running — wait until it finishes")
+
+    profile = load_profile()
+    missing = [m for m in profile.missing_required() if m != "resume"]
+    if missing:
+        raise HTTPException(status_code=400, detail="Profile incomplete: " + ", ".join(missing))
+
+    async def do_apply():
+        _apply_status["running"] = True
+        _apply_status["current_job"] = None
+        try:
+            from backend.applier.engine import run_apply_pipeline
+            result = await run_apply_pipeline(
+                job_ids=req.job_ids,
+                auto_submit=req.auto_submit,
+                headless=req.headless,
+            )
+            _apply_status["last_result"] = result
+        except Exception as e:
+            logger.error(f"Apply error: {e}")
+            _apply_status["last_result"] = {"error": str(e)}
+        finally:
+            _apply_status["running"] = False
+            _apply_status["current_job"] = None
+
+    background_tasks.add_task(do_apply)
+    return {"message": "Apply started", "running": True}
+
+
+@app.post("/api/jobs/{job_id}/apply")
+async def apply_single_job(job_id: str, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    job = db.query(Job).filter(Job.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    req = ApplyRequest(job_ids=[job_id], auto_submit=True, headless=True)
+    return await start_apply(req, background_tasks)
 
 
 # ─── Analytics ───────────────────────────────────────────────────────────────

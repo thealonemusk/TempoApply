@@ -34,8 +34,12 @@ class Settings(BaseSettings):
     instahyre_password: str = ""       # leave blank if using Google auth
     instahyre_use_google_auth: bool = True
 
+    workday_email: str = ""
+    workday_password: str = ""
+
     # User profile
     user_full_name: str = "Ashutosh Jha"
+    user_email: str = ""
     user_phone: str = ""
     user_location: str = "Bengaluru, India"
     user_github: str = ""

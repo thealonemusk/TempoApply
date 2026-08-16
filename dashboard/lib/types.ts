@@ -29,6 +29,9 @@ export interface Job {
   discovered_at: string | null;
   visited_at: string | null;
   applied_at: string | null;
+  ats_type?: string;
+  apply_status?: string;
+  apply_error?: string;
 }
 
 export interface Analytics {
@@ -51,6 +54,45 @@ export interface SettingsData {
   has_instahyre: boolean;
   supported_platforms: string[];
   excluded_companies: string[];
+}
+
+export interface ApplyStatus {
+  running: boolean;
+  last_result: Record<string, unknown> | null;
+  current_job: string | null;
+}
+
+export interface ApplicantProfile {
+  first_name: string;
+  last_name: string;
+  full_name: string;
+  email: string;
+  phone: string;
+  city: string;
+  state: string;
+  country: string;
+  postal_code: string;
+  address_line1: string;
+  address_line2: string;
+  linkedin: string;
+  github: string;
+  portfolio: string;
+  current_title: string;
+  current_company: string;
+  years_experience: string;
+  notice_period: string;
+  earliest_start: string;
+  salary_expectation: string;
+  authorized_to_work: boolean;
+  require_sponsorship: boolean;
+  how_heard: string;
+  skills: string;
+  cover_letter_template: string;
+  auto_submit: boolean;
+  education: { school: string; degree: string; major: string; start_year: string; end_year: string }[];
+  missing: string[];
+  has_resume: boolean;
+  ready_to_apply: boolean;
 }
 
 export interface ScanStatus {

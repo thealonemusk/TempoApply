@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from loguru import logger
 from sqlalchemy.orm import Session
 
+from backend.applier.ats import detect_ats
 from backend.db.models import Job, SessionLocal
 from backend.scrapers.filter_utils import (
     is_job_experience_valid,
@@ -109,6 +110,7 @@ def upsert_jobs(jobs: list, db: Session) -> int:
             easy_apply=job_data.get("easy_apply", False),
             recruiter_name=job_data.get("recruiter_name", ""),
             recruiter_profile=job_data.get("recruiter_profile", ""),
+            ats_type=job_data.get("ats_type") or detect_ats(url),
             status="discovered",
         )
         db.add(job)

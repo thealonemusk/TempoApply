@@ -1,0 +1,83 @@
+{
+  "first_name": "Ashutosh",
+  "last_name": "Jha",
+  "full_name": "Ashutosh Jha",
+  "email": "ashutosh.jha.cs@gmail.com",
+  "phone": "+91-9939964663",
+  "phone_country": "India",
+  "phone_country_code": "+91",
+  "city": "Noida",
+  "state": "Uttar Pradesh",
+  "country": "India",
+  "country_code": "IN",
+  "postal_code": "201304",
+  "address_line1": "Hazipur, Noida Sector 104",
+  "address_line2": "",
+  "linkedin": "https://linkedin.com/in/thealonemusk",
+  "github": "https://github.com/thealonemusk",
+  "portfolio": "https://thealonemusk.tech",
+  "current_title": "Software Engineer",
+  "current_company": "Paytm",
+  "years_experience": "2",
+  "notice_period": "30 days",
+  "earliest_start": "30 days",
+  "salary_expectation": "2100000",
+  "authorized_to_work": true,
+  "require_sponsorship": false,
+  "gender": "Decline to self-identify",
+  "ethnicity": "Decline to self-identify",
+  "veteran": "I am not a protected veteran",
+  "disability": "I do not want to answer",
+  "how_heard": "Company website",
+  "education": [
+    {
+      "school": "National Institute of Technology, Jalandhar",
+      "degree": "B.Tech",
+      "major": "Computer Science and Engineering",
+      "start_year": "2021",
+      "end_year": "2025"
+    }
+  ],
+  "experience": [
+    {
+      "title": "Software Engineer",
+      "company": "Paytm",
+      "location": "Noida, India",
+      "start_date": "01/2025",
+      "end_date": "Present",
+      "description": "Backend for Paytm Soundbox IoT payment devices across 25M+ merchants. Root CA rotation, firmware delivery, MQTT payment notifications at millions of daily transactions."
+    },
+    {
+      "title": "Software Developer Intern",
+      "company": "Denr Financial Services",
+      "location": "Remote",
+      "start_date": "03/2024",
+      "end_date": "06/2024",
+      "description": "React Native app with AWS Cognito, S3, and Lambda. Cut API latency 40% and reached 85% Jest coverage."
+    }
+  ],
+  "skills": "C, C++, Java, Python, JavaScript, Spring Boot, Node.js, REST APIs, Microservices, MySQL, PostgreSQL, Redis, AWS (IoT Core, EC2, S3, EKS, Lambda, Cognito), Docker, Git, Jenkins, React, React Native, MQTT, Distributed Systems",
+  "cover_letter_template": "Dear Hiring Team,\n\nI am applying for the {title} role at {company}. I am a Software Engineer at Paytm working on backend systems for IoT payment devices at national scale, with prior internship experience in React Native and AWS. I would welcome the chance to contribute.\n\nBest regards,\n{name}",
+  "custom_answers": {
+    "how did you hear": "Company website",
+    "are you 18": "Yes",
+    "gpa": "7.79",
+    "cgpa": "7.79",
+    "university": "National Institute of Technology, Jalandhar",
+    "current employer": "Paytm",
+    "last employer": "Paytm",
+    "previously worked": "No",
+    "employment agreements": "No",
+    "post-employment": "No",
+    "country of residence": "India",
+    "authorized to work": "Yes",
+    "sponsorship": "No",
+    "visa": "No",
+    "deemed export": "No",
+    "expected ctc": "2100000",
+    "expected salary": "2100000",
+    "current ctc": "2100000"
+  },
+  "resume_path": "resumes/Ashutosh_Jha.pdf",
+  "auto_submit": true
+}

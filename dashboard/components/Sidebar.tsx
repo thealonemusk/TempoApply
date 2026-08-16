@@ -24,7 +24,7 @@ export function Sidebar() {
     <aside className="flex h-screen w-[var(--sidebar-width)] flex-col border-r border-[var(--border)] bg-[var(--surface)]">
       <div className="px-5 py-6">
         <p className="text-lg font-semibold tracking-tight text-[var(--text-primary)]">TempoApply</p>
-        <p className="mt-0.5 text-xs text-[var(--text-muted)]">Job discovery</p>
+        <p className="mt-0.5 text-xs text-[var(--text-muted)]">Job discovery & apply</p>
       </div>
 
       <nav className="flex-1 space-y-0.5 px-3">

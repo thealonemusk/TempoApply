@@ -13,11 +13,13 @@ import { Button } from '@/components/ui/Button';
 import { Input, Label, Textarea } from '@/components/ui/Input';
 
 const JOBS_PER_PAGE = 20;
+const MANUAL_APPLY_STATUSES = new Set(['failed', 'needs_review', 'skipped']);
 
 export default function JobsPage() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [loading, setLoading] = useState(true);
   const [scanning, setScanning] = useState(false);
+  const [applying, setApplying] = useState(false);
   const [search, setSearch] = useState('');
   const [filterPlatform, setFilterPlatform] = useState('');
   const [sortOrder, setSortOrder] = useState<'desc' | 'asc'>('desc');
@@ -46,7 +48,20 @@ export default function JobsPage() {
   useEffect(() => {
     loadJobs();
     api.getScanStatus().then((s) => setScanning(!!s.running)).catch(() => {});
+    api.getApplyStatus().then((s) => setApplying(!!s.running)).catch(() => {});
   }, [loadJobs]);
+
+  useEffect(() => {
+    if (!applying) return;
+    const id = setInterval(async () => {
+      try {
+        const status = await api.getApplyStatus();
+        await loadJobs(true);
+        if (!status.running) setApplying(false);
+      } catch {}
+    }, 2500);
+    return () => clearInterval(id);
+  }, [applying, loadJobs]);
 
   useEffect(() => {
     if (!scanning) return;
@@ -102,6 +117,41 @@ export default function JobsPage() {
     loadJobs();
   };
 
+  const handleApply = async (id: string) => {
+    if (applying || scanning) return;
+    try {
+      setApplying(true);
+      await api.applyJob(id);
+    } catch (err) {
+      setApplying(false);
+      alert(err instanceof Error ? err.message : 'Could not start apply');
+    }
+  };
+
+  const handleApplyAll = async () => {
+    if (applying || scanning) return;
+    const eligible = jobs.filter(
+      (j) =>
+        !['applied', 'interviewing', 'rejected', 'offer', 'ignored'].includes(j.status) &&
+        j.apply_status !== 'applied' &&
+        !MANUAL_APPLY_STATUSES.has(j.apply_status || ''),
+    );
+    if (!eligible.length) {
+      alert('No eligible jobs to apply to.');
+      return;
+    }
+    if (!confirm(`Auto-apply to ${eligible.length} job${eligible.length === 1 ? '' : 's'} using your saved profile?`)) {
+      return;
+    }
+    try {
+      setApplying(true);
+      await api.startApply();
+    } catch (err) {
+      setApplying(false);
+      alert(err instanceof Error ? err.message : 'Could not start apply. Check Settings → Applicant profile.');
+    }
+  };
+
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return jobs.filter((j) => {
@@ -131,8 +181,17 @@ export default function JobsPage() {
     });
   }, [filtered, sortOrder, sortBy]);
 
-  const totalPages = Math.max(1, Math.ceil(sorted.length / JOBS_PER_PAGE));
-  const pageJobs = sorted.slice((currentPage - 1) * JOBS_PER_PAGE, currentPage * JOBS_PER_PAGE);
+  const queueJobs = useMemo(
+    () => sorted.filter((j) => !MANUAL_APPLY_STATUSES.has(j.apply_status || '')),
+    [sorted],
+  );
+  const manualJobs = useMemo(
+    () => sorted.filter((j) => MANUAL_APPLY_STATUSES.has(j.apply_status || '')),
+    [sorted],
+  );
+
+  const totalPages = Math.max(1, Math.ceil(queueJobs.length / JOBS_PER_PAGE));
+  const pageJobs = queueJobs.slice((currentPage - 1) * JOBS_PER_PAGE, currentPage * JOBS_PER_PAGE);
 
   useEffect(() => setCurrentPage(1), [search, filterPlatform, sortOrder, sortBy]);
 
@@ -156,14 +215,18 @@ export default function JobsPage() {
               {jobs.length} total
               {pendingCount > 0 && ` · ${pendingCount} pending`}
               {visitedCount > 0 && ` · ${visitedCount} visited`}
+              {manualJobs.length > 0 && ` · ${manualJobs.length} need manual apply`}
               {scanning && ' · scanning…'}
+              {applying && ' · applying…'}
             </p>
           </div>
           <ScanBar
             scanning={scanning}
+            applying={applying}
             onScan={handleScan}
             onAdd={() => setAddOpen(true)}
             onClear={handleClearJobs}
+            onApplyAll={handleApplyAll}
           />
         </div>
       </header>
@@ -231,9 +294,13 @@ export default function JobsPage() {
           <div className="overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface)] shadow-sm">
             {loading ? (
               <div className="p-16 text-center text-sm text-[var(--text-muted)]">Loading…</div>
-            ) : sorted.length === 0 ? (
+            ) : queueJobs.length === 0 && manualJobs.length === 0 ? (
               <div className="p-16 text-center text-sm text-[var(--text-muted)]">
                 No jobs yet. Run a scan to discover roles.
+              </div>
+            ) : queueJobs.length === 0 ? (
+              <div className="p-16 text-center text-sm text-[var(--text-muted)]">
+                No jobs left in the auto-apply queue. Check Manual apply below.
               </div>
             ) : (
               <>
@@ -255,8 +322,11 @@ export default function JobsPage() {
                           key={job.id}
                           job={job}
                           index={i}
+                          applying={applying && (job.apply_status === 'applying' || job.apply_status === 'queued')}
+                          applyBusy={applying}
                           onStatusChange={handleStatusChange}
                           onVisit={handleVisit}
+                          onApply={handleApply}
                         />
                       ))}
                     </tbody>
@@ -264,8 +334,8 @@ export default function JobsPage() {
                 </div>
                 <div className="flex items-center justify-between border-t border-[var(--border)] px-4 py-3 text-sm text-[var(--text-muted)]">
                   <span>
-                    {(currentPage - 1) * JOBS_PER_PAGE + 1}–{Math.min(currentPage * JOBS_PER_PAGE, sorted.length)} of{' '}
-                    {sorted.length}
+                    {(currentPage - 1) * JOBS_PER_PAGE + 1}–{Math.min(currentPage * JOBS_PER_PAGE, queueJobs.length)} of{' '}
+                    {queueJobs.length}
                   </span>
                   <div className="flex gap-2">
                     <Button
@@ -289,6 +359,48 @@ export default function JobsPage() {
               </>
             )}
           </div>
+
+          {!loading && manualJobs.length > 0 && (
+            <div className="space-y-3 pt-4">
+              <div>
+                <h2 className="text-lg font-semibold text-[var(--text-primary)]">Manual apply</h2>
+                <p className="mt-0.5 text-sm text-[var(--text-muted)]">
+                  Auto-fill could not finish these. Open the posting and complete them yourself, or retry apply.
+                </p>
+              </div>
+              <div className="overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface)] shadow-sm">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left">
+                    <thead>
+                      <tr className="border-b border-[var(--border)] text-xs font-medium text-[var(--text-muted)]">
+                        <th className="px-4 py-3">Role</th>
+                        <th className="px-4 py-3">Source</th>
+                        <th className="px-4 py-3 text-center">Score</th>
+                        <th className="px-4 py-3">Status</th>
+                        <th className="px-4 py-3">Found</th>
+                        <th className="px-4 py-3" />
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {manualJobs.map((job, i) => (
+                        <JobRow
+                          key={job.id}
+                          job={job}
+                          index={i}
+                          applying={applying && (job.apply_status === 'applying' || job.apply_status === 'queued')}
+                          applyBusy={applying}
+                          alwaysShowOpen
+                          onStatusChange={handleStatusChange}
+                          onVisit={handleVisit}
+                          onApply={handleApply}
+                        />
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </div>
 

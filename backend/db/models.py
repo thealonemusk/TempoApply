@@ -40,6 +40,9 @@ class Job(Base):
     easy_apply = Column(Boolean, default=False)
     recruiter_name = Column(String, default="")
     recruiter_profile = Column(String, default="")
+    ats_type = Column(String, default="")  # greenhouse, lever, workday, custom, unknown
+    apply_status = Column(String, default="")  # queued, applying, applied, failed, needs_review, skipped
+    apply_error = Column(Text, default="")
     # Timestamps
     discovered_at = Column(DateTime, default=func.now())
     visited_at = Column(DateTime, nullable=True)
@@ -98,3 +101,12 @@ def _migrate_db():
         if "visited_at" not in col_names:
             conn.execute(text("ALTER TABLE jobs ADD COLUMN visited_at DATETIME"))
             conn.commit()
+        extras = {
+            "ats_type": "VARCHAR DEFAULT ''",
+            "apply_status": "VARCHAR DEFAULT ''",
+            "apply_error": "TEXT DEFAULT ''",
+        }
+        for name, ddl in extras.items():
+            if name not in col_names:
+                conn.execute(text(f"ALTER TABLE jobs ADD COLUMN {name} {ddl}"))
+                conn.commit()

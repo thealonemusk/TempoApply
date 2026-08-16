@@ -27,3 +27,17 @@ export const DEFAULT_SCAN_PLATFORMS = [
 export function platformLabel(key: string): string {
   return PLATFORM_LABELS[key] || key.replace(/_/g, ' ');
 }
+
+export const ATS_LABELS: Record<string, string> = {
+  greenhouse: 'Greenhouse',
+  lever: 'Lever',
+  workday: 'Workday',
+  ashby: 'Ashby',
+  custom: 'Custom form',
+  unknown: 'Unknown',
+};
+
+export function atsLabel(key: string): string {
+  if (!key) return '';
+  return ATS_LABELS[key] || key;
+}

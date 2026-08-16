@@ -40,11 +40,14 @@ async def create_browser_context(playwright, headless: bool = True) -> tuple:
 
 def normalize_job(raw: dict, platform: str) -> dict:
     """Normalize a raw scraped job dict to standard schema."""
+    from backend.applier.ats import detect_ats
+
+    url = raw.get("url", "").strip()
     return {
         "title": raw.get("title", "").strip(),
         "company": raw.get("company", "").strip(),
         "platform": platform,
-        "url": raw.get("url", "").strip(),
+        "url": url,
         "location": raw.get("location", "").strip(),
         "experience_required": raw.get("experience_required", "").strip(),
         "salary_range": raw.get("salary_range", "").strip(),
@@ -52,6 +55,7 @@ def normalize_job(raw: dict, platform: str) -> dict:
         "easy_apply": raw.get("easy_apply", False),
         "recruiter_name": raw.get("recruiter_name", "").strip(),
         "recruiter_profile": raw.get("recruiter_profile", "").strip(),
+        "ats_type": raw.get("ats_type") or detect_ats(url),
         "relevance_score": 0.0,
         "fit_reason": "",
         "missing_skills": "[]",

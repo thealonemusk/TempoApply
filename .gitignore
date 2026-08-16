@@ -1,5 +1,6 @@
 .env
 .env.example
+config/.env
 
 # Python
 __pycache__
@@ -21,6 +22,12 @@ temp/**
 logs/*
 logs/**
 
+# Apply screenshots and generated resumes
+data/apply_logs/*.png
+resumes/*.pdf
+resumes/*.doc
+resumes/*.docx
+
 # Temporary files
 temp/*
 temp/**
@@ -28,3 +35,9 @@ temp/**
 # Logs
 logs/*
 logs/**
+
+# Apply screenshots and generated resumes
+data/apply_logs/*.png
+resumes/*.pdf
+resumes/*.doc
+resumes/*.docx
