@@ -102,7 +102,7 @@ export const api = {
       body: JSON.stringify({
         job_ids: jobIds || null,
         auto_submit: true,
-        headless: true,
+        headless: false,
       }),
     }),
 

@@ -16,6 +16,14 @@ from backend.applier.fields import (
 )
 from backend.applier.profile import ApplicantProfile
 
+
+def apply_result(status: str, message: str, extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    out = {"status": status, "message": message}
+    if extra:
+        out.update(extra)
+    return out
+
+
 COOKIE_NAMES = (
     "Accept all", "Accept All", "Accept cookies", "Accept Cookies",
     "I agree", "Agree", "Got it", "Allow all", "Allow All", "OK", "Okay",
@@ -26,6 +34,7 @@ APPLY_NAMES = (
 )
 SKIP_APPLY_SUBSTRINGS = (
     "linkedin", "indeed", "google", "facebook", "continue with", "sign in with",
+    "easy apply",
 )
 NEXT_NAMES = ("Next", "Continue", "Save and continue", "Save & Continue")
 SUBMIT_NAMES = (
@@ -252,10 +261,25 @@ async def _fill_combobox(scope: Page | FrameLocator, selector: str, value: str) 
                 await control.first.click(timeout=2000, force=True)
             else:
                 return False
-        try:
-            await loc.fill(value, timeout=1500)
-        except Exception:
-            pass
+        typed = False
+        for inp_sel in (
+            selector,
+            f"{selector} input",
+            "input.select__input",
+            'input[id*="react-select"]',
+        ):
+            try:
+                target = _locator(scope, inp_sel).last if inp_sel != selector else loc
+                await target.fill(value, timeout=1200)
+                typed = True
+                break
+            except Exception:
+                continue
+        if not typed:
+            try:
+                await loc.press_sequentially(value, delay=20)
+            except Exception:
+                pass
         await asyncio.sleep(0.35)
         menu = scope.locator('.select__option, [class*="select__option"], [role="option"]:not(.iti__country)')
         count = min(await menu.count(), 30)
@@ -509,6 +533,10 @@ async def unfilled_required(scope: Page | FrameLocator) -> List[str]:
         if (!vis(el)) continue;
         const type = (el.type || '').toLowerCase();
         if (['hidden', 'submit', 'button'].includes(type)) continue;
+        if (el.closest('[data-automation-id="multiSelectContainer"], [data-automation-id="selectedItemList"]')) {
+          const wrap = el.closest('[data-automation-id^="formField-"]');
+          if (wrap && /item selected/i.test(wrap.innerText || '')) continue;
+        }
         let empty = false;
         if (type === 'checkbox' || type === 'radio') {
           const group = document.querySelectorAll(`[name="${el.name}"]`);
@@ -543,6 +571,9 @@ SUCCESS_TEXT = (
     "successfully applied",
     "application received",
     "you have applied",
+    "successfully submitted",
+    "your application was submitted",
+    "we received your application",
 )
 
 SUCCESS_URL_PARTS = ("/confirmation", "/thanks", "/thank-you", "application-submitted", "applied=true")
@@ -592,3 +623,59 @@ async def wait_settled(page: Page, ms: int = 900) -> None:
     except PlaywrightTimeout:
         pass
     await page.wait_for_timeout(ms)
+
+
+async def finish_application(
+    page: Page,
+    scope,
+    profile: ApplicantProfile,
+    auto_submit: bool,
+    job_id: str,
+    filled_info: Dict[str, Any],
+    log_dir: Path,
+) -> Dict[str, Any]:
+    if await application_succeeded(page):
+        return apply_result("applied", "Application submitted", filled_info)
+
+    leftover = await unfilled_required(scope)
+    leftover += filled_info.get("unknown_required") or []
+    leftover = [x for x in leftover if x]
+    filled = int(filled_info.get("filled") or 0)
+    uploaded = bool(filled_info.get("resume_uploaded"))
+
+    if filled == 0 and not uploaded:
+        await screenshot_failure(page, log_dir / f"{job_id}.png")
+        return apply_result("failed", "No application form was found or filled on this posting", filled_info)
+
+    if leftover:
+        await screenshot_failure(page, log_dir / f"{job_id}.png")
+        return apply_result(
+            "needs_review",
+            "Required fields could not be filled: " + "; ".join(leftover[:8]),
+            filled_info,
+        )
+
+    if not auto_submit or not profile.auto_submit:
+        await screenshot_failure(page, log_dir / f"{job_id}-filled.png")
+        return apply_result("needs_review", "Form filled. auto_submit is off — submit manually.", filled_info)
+
+    if await captcha_present(page):
+        await screenshot_failure(page, log_dir / f"{job_id}.png")
+        return apply_result("needs_review", "CAPTCHA present — complete this one in the browser", filled_info)
+
+    clicked = await click_submit(scope)
+    await wait_settled(page, 1500)
+    if await application_succeeded(page):
+        return apply_result("applied", "Application submitted", filled_info)
+    if clicked:
+        await wait_settled(page, 2000)
+        if await application_succeeded(page):
+            return apply_result("applied", "Application submitted", filled_info)
+        await screenshot_failure(page, log_dir / f"{job_id}.png")
+        return apply_result(
+            "needs_review",
+            "Submit clicked but confirmation was not detected. Check the screenshot.",
+            filled_info,
+        )
+    await screenshot_failure(page, log_dir / f"{job_id}.png")
+    return apply_result("needs_review", "Could not find a submit button", filled_info)

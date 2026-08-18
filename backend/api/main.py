@@ -100,7 +100,7 @@ class StatusUpdate(BaseModel):
 class ApplyRequest(BaseModel):
     job_ids: Optional[List[str]] = None
     auto_submit: bool = True
-    headless: bool = True
+    headless: bool = False
 
 
 class ManualJobRequest(BaseModel):
@@ -403,7 +403,7 @@ async def apply_single_job(job_id: str, background_tasks: BackgroundTasks, db: S
     job = db.query(Job).filter(Job.id == job_id).first()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-    req = ApplyRequest(job_ids=[job_id], auto_submit=True, headless=True)
+    req = ApplyRequest(job_ids=[job_id], auto_submit=True, headless=False)
     return await start_apply(req, background_tasks)
 
 

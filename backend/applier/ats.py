@@ -1,5 +1,14 @@
 """Detect ATS type from a job URL."""
-from urllib.parse import urlparse
+import re
+from urllib.parse import unquote, urlparse
+
+ATS_URL_RE = re.compile(
+    r"https?://[^\s\"'<>\\]+(?:"
+    r"myworkdayjobs\.com|myworkday\.com|greenhouse\.io|jobs\.lever\.co|"
+    r"ashbyhq\.com|smartrecruiters\.com|icims\.com"
+    r")[^\s\"'<>\\]*",
+    re.I,
+)
 
 ATS_HOST_MARKERS = (
     ("greenhouse.io", "greenhouse"),
@@ -42,3 +51,16 @@ def apply_url_for_ats(url: str, ats: str) -> str:
     if ats == "greenhouse" and "#" not in url:
         return url
     return url
+
+
+def first_ats_url(*texts: str) -> str:
+    """Find the first Greenhouse/Lever/Workday/etc URL in HTML, JD, or href lists."""
+    for text in texts:
+        if not text:
+            continue
+        decoded = unquote(str(text).replace("&amp;", "&"))
+        for match in ATS_URL_RE.findall(decoded):
+            url = match.rstrip(").,]}>'\"")
+            if detect_ats(url) != "unknown":
+                return url
+    return ""

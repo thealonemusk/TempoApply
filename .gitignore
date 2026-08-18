@@ -27,6 +27,8 @@ data/apply_logs/*.png
 resumes/*.pdf
 resumes/*.doc
 resumes/*.docx
+data/browser_state.json
+data/chrome_profile/
 
 # Temporary files
 temp/*

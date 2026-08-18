@@ -13,6 +13,7 @@ from sqlalchemy import or_
 from backend.applier.adapters import LOG_DIR, apply_on_page
 from backend.applier.ats import detect_ats
 from backend.applier.filler import screenshot_failure
+from backend.applier.linkedin_apply import ensure_linkedin_session
 from backend.applier.profile import ApplicantProfile, ensure_resume_pdf, load_profile
 from backend.db.models import Application, Job, SessionLocal
 from backend.scrapers.base import create_browser_context
@@ -20,6 +21,20 @@ from backend.scrapers.base import create_browser_context
 SKIP_STATUSES = {"applied", "interviewing", "rejected", "offer", "ignored"}
 MANUAL_APPLY_STATUSES = {"failed", "needs_review", "skipped"}
 DELAY_BETWEEN_JOBS_SEC = 8
+
+
+async def _reuse_page(context):
+    pages = [p for p in context.pages if not p.is_closed()]
+    return pages[0] if pages else await context.new_page()
+
+
+async def _close_extra_pages(context, keep) -> None:
+    for extra in list(context.pages):
+        if extra != keep:
+            try:
+                await extra.close()
+            except Exception:
+                pass
 
 
 def eligible_jobs(db, job_ids: Optional[List[str]] = None) -> List[Job]:
@@ -74,6 +89,7 @@ async def apply_one_job(
             company=job.company,
             auto_submit=auto_submit,
             job_id=job.id,
+            jd_text=job.jd_text or "",
         )
     except Exception as exc:
         logger.exception(f"Apply failed for {job.title} @ {job.company}")
@@ -84,7 +100,7 @@ async def apply_one_job(
 async def run_apply_pipeline(
     job_ids: Optional[List[str]] = None,
     auto_submit: bool = True,
-    headless: bool = True,
+    headless: bool = False,
 ) -> Dict:
     profile = load_profile()
     missing = profile.missing_required()
@@ -122,12 +138,17 @@ async def run_apply_pipeline(
 
         async with async_playwright() as playwright:
             browser, context = await create_browser_context(playwright, headless=headless)
+            page = await _reuse_page(context)
             try:
-                bootstrap = await context.new_page()
-                resume = await ensure_resume_pdf(bootstrap, profile)
-                await bootstrap.close()
+                resume = await ensure_resume_pdf(page, profile)
+                signed_in = await ensure_linkedin_session(page)
                 if not resume:
                     return {**summary, "error": "Could not create or find a resume PDF"}
+                if not signed_in:
+                    return {
+                        **summary,
+                        "error": "LinkedIn not signed in. Use the TempoApply Chrome window, then retry.",
+                    }
 
                 for i, job in enumerate(jobs):
                     fresh = db.query(Job).filter(Job.id == job.id).first()
@@ -136,11 +157,9 @@ async def run_apply_pipeline(
                     fresh.apply_status = "applying"
                     db.commit()
 
-                    page = await context.new_page()
-                    try:
-                        result = await apply_one_job(page, fresh, profile, resume, auto_submit)
-                    finally:
-                        await page.close()
+                    page = await _reuse_page(context)
+                    result = await apply_one_job(page, fresh, profile, resume, auto_submit)
+                    await _close_extra_pages(context, page)
 
                     _record_result(db, fresh, result)
                     bucket = result.get("status") or "failed"
@@ -161,8 +180,15 @@ async def run_apply_pipeline(
                     if i < len(jobs) - 1:
                         await asyncio.sleep(DELAY_BETWEEN_JOBS_SEC)
             finally:
-                await context.close()
-                await browser.close()
+                try:
+                    await context.close()
+                except Exception:
+                    pass
+                if browser:
+                    try:
+                        await browser.close()
+                    except Exception:
+                        pass
     finally:
         db.close()
 
