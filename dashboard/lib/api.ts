@@ -106,6 +106,9 @@ export const api = {
       }),
     }),
 
+  stopApply: () =>
+    request<{ message: string; running: boolean }>('/api/apply/stop', { method: 'POST' }),
+
   applyJob: (id: string) =>
     request<{ message: string; running: boolean }>(`/api/jobs/${id}/apply`, { method: 'POST' }),
 };

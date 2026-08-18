@@ -8,6 +8,7 @@ from loguru import logger
 from playwright.async_api import Page
 
 from backend.applier.ats import detect_ats, first_ats_url
+from backend.applier.control import should_stop
 from backend.applier.filler import click_named_button, dismiss_overlays, wait_settled
 
 HREF_JS = """() => {
@@ -49,6 +50,9 @@ async def wait_for_linkedin_login(page: Page, seconds: int = LOGIN_WAIT_SEC) -> 
         f"Waiting up to {seconds // 60} minutes..."
     )
     for _ in range(seconds):
+        if should_stop():
+            logger.warning("LinkedIn login wait stopped")
+            return False
         await page.wait_for_timeout(1000)
         if await _linkedin_logged_in(page):
             logger.info("LinkedIn signed in")

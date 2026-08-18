@@ -1,6 +1,6 @@
 'use client';
 
-import { RefreshCw, Plus, Trash2, Send } from 'lucide-react';
+import { RefreshCw, Plus, Trash2, Send, Square } from 'lucide-react';
 import clsx from 'clsx';
 import { Button } from '@/components/ui/Button';
 
@@ -11,9 +11,18 @@ interface ScanBarProps {
   onAdd: () => void;
   onClear: () => void;
   onApplyAll?: () => void;
+  onStopApply?: () => void;
 }
 
-export function ScanBar({ scanning, applying, onScan, onAdd, onClear, onApplyAll }: ScanBarProps) {
+export function ScanBar({
+  scanning,
+  applying,
+  onScan,
+  onAdd,
+  onClear,
+  onApplyAll,
+  onStopApply,
+}: ScanBarProps) {
   return (
     <div className="flex items-center gap-2">
       <Button variant="secondary" size="sm" onClick={onClear}>
@@ -24,6 +33,12 @@ export function ScanBar({ scanning, applying, onScan, onAdd, onClear, onApplyAll
         <Plus className="h-4 w-4" />
         Add
       </Button>
+      {onApplyAll && applying && onStopApply && (
+        <Button variant="danger" size="sm" onClick={onStopApply}>
+          <Square className="h-3.5 w-3.5 fill-current" />
+          Stop
+        </Button>
+      )}
       {onApplyAll && (
         <Button variant="secondary" size="sm" onClick={onApplyAll} disabled={scanning || applying}>
           <Send className={clsx('h-4 w-4', applying && 'animate-pulse')} />

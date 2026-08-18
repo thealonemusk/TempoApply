@@ -152,6 +152,15 @@ export default function JobsPage() {
     }
   };
 
+  const handleStopApply = async () => {
+    if (!applying) return;
+    try {
+      await api.stopApply();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Could not stop apply');
+    }
+  };
+
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return jobs.filter((j) => {
@@ -227,6 +236,7 @@ export default function JobsPage() {
             onAdd={() => setAddOpen(true)}
             onClear={handleClearJobs}
             onApplyAll={handleApplyAll}
+            onStopApply={handleStopApply}
           />
         </div>
       </header>

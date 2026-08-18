@@ -12,6 +12,7 @@ from sqlalchemy import or_
 
 from backend.applier.adapters import LOG_DIR, apply_on_page
 from backend.applier.ats import detect_ats
+from backend.applier.control import clear_stop, should_stop
 from backend.applier.filler import screenshot_failure
 from backend.applier.linkedin_apply import ensure_linkedin_session
 from backend.applier.profile import ApplicantProfile, ensure_resume_pdf, load_profile
@@ -21,6 +22,7 @@ from backend.scrapers.base import create_browser_context
 SKIP_STATUSES = {"applied", "interviewing", "rejected", "offer", "ignored"}
 MANUAL_APPLY_STATUSES = {"failed", "needs_review", "skipped"}
 DELAY_BETWEEN_JOBS_SEC = 8
+_active_context = None
 
 
 async def _reuse_page(context):
@@ -35,6 +37,36 @@ async def _close_extra_pages(context, keep) -> None:
                 await extra.close()
             except Exception:
                 pass
+
+
+async def close_apply_browser() -> None:
+    ctx = _active_context
+    if ctx is None:
+        return
+    try:
+        await ctx.close()
+    except Exception:
+        pass
+
+
+def _skip_unfinished(db, jobs: List[Job], summary: Dict) -> None:
+    for job in jobs:
+        fresh = db.query(Job).filter(Job.id == job.id).first()
+        if not fresh or fresh.apply_status not in {"queued", "applying"}:
+            continue
+        fresh.apply_status = "skipped"
+        fresh.apply_error = "Stopped by user"
+        summary["skipped"] = summary.get("skipped", 0) + 1
+        summary["results"].append({
+            "job_id": fresh.id,
+            "title": fresh.title,
+            "company": fresh.company,
+            "status": "skipped",
+            "message": "Stopped by user",
+            "ats": fresh.ats_type or "",
+        })
+    db.commit()
+    summary["message"] = "Stopped by user"
 
 
 def eligible_jobs(db, job_ids: Optional[List[str]] = None) -> List[Job]:
@@ -92,6 +124,8 @@ async def apply_one_job(
             jd_text=job.jd_text or "",
         )
     except Exception as exc:
+        if should_stop():
+            return {"status": "skipped", "message": "Stopped by user", "ats": detect_ats(job.url)}
         logger.exception(f"Apply failed for {job.title} @ {job.company}")
         await screenshot_failure(page, LOG_DIR / f"{job.id}.png")
         return {"status": "failed", "message": str(exc), "ats": detect_ats(job.url)}
@@ -123,6 +157,8 @@ async def run_apply_pipeline(
         "skipped": 0,
         "results": [],
     }
+    global _active_context
+    clear_stop()
     try:
         jobs = eligible_jobs(db, job_ids)
         if not jobs:
@@ -138,12 +174,19 @@ async def run_apply_pipeline(
 
         async with async_playwright() as playwright:
             browser, context = await create_browser_context(playwright, headless=headless)
+            _active_context = context
             page = await _reuse_page(context)
             try:
+                if should_stop():
+                    _skip_unfinished(db, jobs, summary)
+                    return summary
                 resume = await ensure_resume_pdf(page, profile)
                 signed_in = await ensure_linkedin_session(page)
                 if not resume:
                     return {**summary, "error": "Could not create or find a resume PDF"}
+                if should_stop():
+                    _skip_unfinished(db, jobs, summary)
+                    return summary
                 if not signed_in:
                     return {
                         **summary,
@@ -151,6 +194,9 @@ async def run_apply_pipeline(
                     }
 
                 for i, job in enumerate(jobs):
+                    if should_stop():
+                        _skip_unfinished(db, jobs, summary)
+                        return summary
                     fresh = db.query(Job).filter(Job.id == job.id).first()
                     if not fresh:
                         continue
@@ -177,9 +223,17 @@ async def run_apply_pipeline(
                     logger.info(
                         f"Apply {i + 1}/{len(jobs)} {fresh.title} @ {fresh.company}: {bucket}"
                     )
+                    if should_stop():
+                        _skip_unfinished(db, jobs, summary)
+                        return summary
                     if i < len(jobs) - 1:
-                        await asyncio.sleep(DELAY_BETWEEN_JOBS_SEC)
+                        for _ in range(DELAY_BETWEEN_JOBS_SEC):
+                            if should_stop():
+                                _skip_unfinished(db, jobs, summary)
+                                return summary
+                            await asyncio.sleep(1)
             finally:
+                _active_context = None
                 try:
                     await context.close()
                 except Exception:

@@ -364,6 +364,18 @@ def get_apply_status():
     return _apply_status
 
 
+@app.post("/api/apply/stop")
+async def stop_apply():
+    from backend.applier.control import request_stop
+    from backend.applier.engine import close_apply_browser
+
+    if not _apply_status["running"]:
+        return {"message": "Apply is not running", "running": False}
+    request_stop()
+    await close_apply_browser()
+    return {"message": "Stop requested", "running": True}
+
+
 @app.post("/api/apply")
 async def start_apply(req: ApplyRequest, background_tasks: BackgroundTasks):
     if _apply_status["running"]:
