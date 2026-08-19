@@ -12,7 +12,7 @@ from bs4 import BeautifulSoup
 from loguru import logger
 
 from backend.scrapers.base import normalize_job
-from backend.scrapers.filter_utils import is_job_experience_valid
+from backend.scrapers.filter_utils import passes_hard_filters
 from backend.scrapers.registry import resolve_discovery_roles
 from backend.config import settings
 from backend.job_freshness import LINKEDIN_TIME_FILTER
@@ -28,8 +28,8 @@ EXTRA_LOCATIONS = [
     "India",
     "Bengaluru", "Bangalore", "Hyderabad", "Pune", "Mumbai",
     "Gurugram", "Gurgaon", "Noida", "Delhi", "Chennai", "Kolkata",
-    "Remote", "Work from Home",
 ]
+SKIP_SEARCH_LOCATIONS = {"remote", "work from home", "wfh", "anywhere"}
 
 LINKEDIN_PAGES = 12
 PAGE_SIZE = 10
@@ -41,9 +41,10 @@ def _merge_locations(locations: List[str]) -> List[str]:
     seen: Set[str] = set()
     for loc in list(locations) + EXTRA_LOCATIONS:
         key = loc.lower().strip()
-        if key and key not in seen:
-            seen.add(key)
-            merged.append(loc.strip())
+        if not key or key in seen or key in SKIP_SEARCH_LOCATIONS:
+            continue
+        seen.add(key)
+        merged.append(loc.strip())
     return merged
 
 
@@ -160,8 +161,9 @@ def _collect_listings(
                                 "location": item["location"] or location,
                                 "url": url,
                                 "jd_text": "",
+                                "platform": "linkedin",
                             }
-                            ok, _ = is_job_experience_valid(preview)
+                            ok, _ = passes_hard_filters(preview)
                             if not ok:
                                 continue
 
@@ -187,8 +189,8 @@ def _enrich_listings(listings: List[dict]) -> List[dict]:
 
     enriched = []
     for listing, detail in zip(listings, details):
-        job_data = {**listing, **detail}
-        ok, _ = is_job_experience_valid(job_data)
+        job_data = {**listing, **detail, "platform": "linkedin"}
+        ok, _ = passes_hard_filters(job_data)
         if not ok:
             continue
         enriched.append(normalize_job(job_data, "linkedin"))

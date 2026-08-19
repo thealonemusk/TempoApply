@@ -1,12 +1,11 @@
 """
-Filter utilities — text parsing and strict experience/title boundary checks.
-Enforces hard limits to ensure only entry-level / early-career (<= 2 years exp) jobs are retained.
+Filter utilities — text parsing and strict experience/title/location checks.
+Hard limits: <= 2 years experience, no frontend-only roles, India-only locations.
 """
 
 import re
 from typing import Optional, Tuple
 
-# Keywords in job titles that indicate non-entry-level or senior positions
 EXCLUDED_TITLE_KEYWORDS = [
     "senior", "sr.", "sr ", "lead", "staff", "principal", "manager",
     "director", "head", "architect", "sde 2", "sde-2", "sde2", "sde 3", "sde-3",
@@ -15,13 +14,11 @@ EXCLUDED_TITLE_KEYWORDS = [
     "consultant", "specialist",
 ]
 
-# Patterns in job titles indicating level II/III or 2/3 (non-entry)
 EXCLUDED_TITLE_REGEXES = [
     r'\b(?:ii|iii|iv|v)\b',
     r'(?<!\d)[-_\s](?:2|3|4|5)(?!(?:\s*\+|\s*(?:years?|yrs?|yr|y)\b|\s+to\s+\d))',
 ]
 
-# Hard cap: no JD or listing may ask for more than 2 years of experience.
 MAX_JD_EXPERIENCE_YEARS = 2.0
 
 INTERN_PATTERN = re.compile(r'\bintern(?:s|ship)?\b', re.IGNORECASE)
@@ -39,74 +36,135 @@ GENERIC_ENGINEER_TITLES = [
     "devops engineer", "machine learning engineer", "ai engineer", "ml engineer",
 ]
 
-# e.g. "6+yrs", "9+ years", "5 to 7 years", "6-10 years" in titles
-TITLE_EXPERIENCE_PATTERN = re.compile(
-    r'(?:'
-    r'(?:\d+(?:\.\d+)?)\s*\+\s*(?:yrs?|years?|yr|exp)?'
-    r'|(?:\d+(?:\.\d+)?)\s*(?:-|to|–|—)\s*(?:\d+(?:\.\d+)?)\s*(?:yrs?|years?|yr|y)?'
-    r'|\b(?:\d+(?:\.\d+)?)\s*(?:yrs?|years?)\s*(?:of\s+)?(?:exp|experience)\b'
-    r')',
+YEAR_TOKEN = r'(?:years?|yrs?|yr)\b'
+
+RANGE_YEARS_RE = re.compile(
+    rf'(\d+(?:\.\d+)?)\s*(?:-|to|–|—)\s*(\d+(?:\.\d+)?)\s*{YEAR_TOKEN}',
     re.IGNORECASE,
+)
+PLUS_YEARS_RE = re.compile(
+    rf'(\d+(?:\.\d+)?)\s*(?:\+|plus)\s*{YEAR_TOKEN}',
+    re.IGNORECASE,
+)
+MIN_YEARS_RE = re.compile(
+    rf'(?:minimum|min\.?|at least|atleast|more than|over)\s*(\d+(?:\.\d+)?)\s*{YEAR_TOKEN}',
+    re.IGNORECASE,
+)
+SOLO_YEARS_RE = re.compile(
+    rf'(\d+(?:\.\d+)?)\s*{YEAR_TOKEN}(?:\s*(?:\+|plus))?(?:\s+(?:of\s+)?(?:relevant\s+)?(?:professional\s+)?(?:industry\s+)?(?:software\s+)?(?:work\s+)?(?:experience|exp))?',
+    re.IGNORECASE,
+)
+EXP_PREFIX_RE = re.compile(
+    rf'(?:experience|exp(?:erience)?)\s*[:\-]?\s*(\d+(?:\.\d+)?)(?:\s*(?:-|to|–|—)\s*(\d+(?:\.\d+)?))?(?:\s*{YEAR_TOKEN})?',
+    re.IGNORECASE,
+)
+JD_EXP_RE = re.compile(
+    rf'(?:experience|exp(?:erience)?|requir(?:e|ed|es|ing)|must have|minimum|min\.?|at least|atleast)'
+    rf'.{{0,60}}?(\d+(?:\.\d+)?)\s*(?:\+|plus)?\s*(?:-|to|–|—)?\s*(\d+(?:\.\d+)?)?\s*{YEAR_TOKEN}'
+    rf'|'
+    rf'(\d+(?:\.\d+)?)\s*(?:\+|plus)?\s*(?:-|to|–|—)?\s*(\d+(?:\.\d+)?)?\s*{YEAR_TOKEN}'
+    rf'\s+(?:of\s+)?(?:relevant\s+)?(?:professional\s+)?(?:industry\s+)?(?:software\s+)?(?:work\s+)?(?:experience|exp)\b',
+    re.IGNORECASE | re.DOTALL,
+)
+
+INDIA_PLATFORMS = {"naukri", "instahyre", "indeed"}
+INDIA_MARKERS = (
+    "india", "bharat", "bengaluru", "bangalore", "hyderabad", "pune", "mumbai",
+    "gurugram", "gurgaon", "noida", "delhi", "new delhi", "ncr", "chennai",
+    "kolkata", "ahmedabad", "jaipur", "chandigarh", "kochi", "coimbatore",
+    "indore", "lucknow", "mysore", "mysuru", "thane", "navi mumbai",
+    "telangana", "karnataka", "maharashtra", "haryana", "uttar pradesh",
+    "tamil nadu", "kerala", "west bengal", "pan india", "remote - india",
+    "remote (india)", "india (remote)",
+)
+ABROAD_MARKERS = (
+    "united states", "u.s.a", "u.s.", "usa", "america",
+    "california", "san francisco", "bay area", "new york", "seattle",
+    "austin", "boston", "chicago", "denver", "atlanta", "texas",
+    "washington", "los angeles", "san jose", "palo alto", "mountain view",
+    "united kingdom", "england", "london", "manchester", "scotland",
+    "canada", "toronto", "vancouver", "ontario", "montreal",
+    "germany", "berlin", "munich", "netherlands", "amsterdam",
+    "australia", "sydney", "melbourne", "singapore", "dubai", "uae",
+    "ireland", "dublin", "poland", "warsaw", "remote - us", "remote, us",
+    "remote (us)", "us remote",
+)
+US_STATE_RE = re.compile(
+    r',\s*(AL|AK|AZ|AR|CA|CO|CT|DC|DE|FL|GA|HI|IA|ID|IL|KS|KY|LA|MA|MD|ME|'
+    r'MI|MN|MO|MS|MT|NC|ND|NE|NH|NJ|NM|NV|NY|OH|OK|OR|PA|RI|SC|SD|TN|TX|'
+    r'UT|VA|VT|WA|WI|WV)\b',
+    re.IGNORECASE,
+)
+FRONTEND_MARKERS = (
+    "frontend", "front-end", "front end",
+    "ui engineer", "ui developer", "ui/ux", "ux engineer",
+    "react developer", "react.js developer", "reactjs developer",
+    "angular developer", "vue developer", "vue.js",
+)
+FRONTEND_KEEP = (
+    "full stack", "fullstack", "full-stack", "backend", "back-end", "back end",
 )
 
 
 def _experience_exceeds_cap(min_y: float, max_y: float, cap: float = MAX_JD_EXPERIENCE_YEARS) -> bool:
-    """True if the stated range asks for more than `cap` years."""
     return min_y > cap or max_y > cap
 
 
-def parse_experience_years(text: str) -> Optional[Tuple[float, float]]:
-    """
-    Extract (min_years, max_years) from text snippets like:
-    - "3-5 Yrs", "0-2 years", "1 to 3 yrs"
-    - "3+ years", "Minimum 3 years", "at least 4 yrs"
-    - "2 yrs", "5 years"
-    Returns None if no experience numbers are detected.
-    """
+def _pair(min_y: float, max_y: float) -> Tuple[float, float]:
+    if max_y < min_y:
+        return max_y, min_y
+    return min_y, max_y
+
+
+def _ranges_from_text(text: str) -> list:
     if not text:
-        return None
+        return []
+    found = []
+    for match in RANGE_YEARS_RE.finditer(text):
+        found.append(_pair(float(match.group(1)), float(match.group(2))))
+    for match in PLUS_YEARS_RE.finditer(text):
+        min_y = float(match.group(1))
+        found.append((min_y, min_y + 3.0))
+    for match in MIN_YEARS_RE.finditer(text):
+        min_y = float(match.group(1))
+        phrase = match.group(0).lower()
+        if "more than" in phrase or phrase.startswith("over"):
+            found.append((min_y + 0.1, min_y + 0.1))
+        else:
+            found.append((min_y, min_y))
+    for match in EXP_PREFIX_RE.finditer(text):
+        min_y = float(match.group(1))
+        max_y = float(match.group(2)) if match.group(2) else min_y
+        found.append(_pair(min_y, max_y))
+    if not found:
+        for match in SOLO_YEARS_RE.finditer(text):
+            val = float(match.group(1))
+            found.append((val, val))
+    return found
 
-    clean_text = text.lower().strip()
 
-    range_match = re.search(
-        r'(\d+(?:\.\d+)?)\s*(?:-|to|–|—)\s*(\d+(?:\.\d+)?)\s*(?:years?|yrs?|yr|y)\b',
-        clean_text,
-    )
-    if range_match:
-        return float(range_match.group(1)), float(range_match.group(2))
+def parse_experience_years(text: str) -> Optional[Tuple[float, float]]:
+    ranges = _ranges_from_text(text or "")
+    return ranges[0] if ranges else None
 
-    plus_match = re.search(
-        r'(?:minimum|min\.?|at least)?\s*(\d+(?:\.\d+)?)\s*\+\s*(?:years?|yrs?|yr|y)?',
-        clean_text,
-    )
-    if plus_match:
-        min_y = float(plus_match.group(1))
-        return min_y, min_y + 3.0
 
-    min_phrase_match = re.search(
-        r'(?:minimum|min\.?|at least)\s*(\d+(?:\.\d+)?)\s*(?:years?|yrs?|yr|y)?',
-        clean_text,
-    )
-    if min_phrase_match:
-        min_y = float(min_phrase_match.group(1))
-        return min_y, min_y + 2.0
-
-    standalone_match = re.search(r'(\d+(?:\.\d+)?)\s*(?:years?|yrs?|yr|y)', clean_text)
-    if standalone_match:
-        val = float(standalone_match.group(1))
-        return val, val
-
-    return None
+def _jd_experience_ranges(jd_text: str) -> list:
+    found = []
+    for match in JD_EXP_RE.finditer(jd_text or ""):
+        a, b, c, d = match.group(1), match.group(2), match.group(3), match.group(4)
+        phrase = match.group(0)
+        if a:
+            min_y = float(a)
+            max_y = float(b) if b else (min_y + 3.0 if "+" in phrase else min_y)
+        else:
+            min_y = float(c)
+            max_y = float(d) if d else (min_y + 3.0 if "+" in phrase else min_y)
+        found.append(_pair(min_y, max_y))
+    return found
 
 
 def is_job_experience_valid(job_data: dict, max_years: float = MAX_JD_EXPERIENCE_YEARS) -> Tuple[bool, str]:
-    """
-    Reject jobs whose title, listing, or JD asks for more than 2 years of experience.
-
-    Returns:
-        (is_valid: bool, reason: str)
-    """
-    cap = min(max_years, MAX_JD_EXPERIENCE_YEARS)
+    cap = min(float(max_years), MAX_JD_EXPERIENCE_YEARS)
     title = job_data.get("title", "").strip()
     title_lower = title.lower()
     jd_text = job_data.get("jd_text", "").strip()
@@ -122,61 +180,22 @@ def is_job_experience_valid(job_data: dict, max_years: float = MAX_JD_EXPERIENCE
         if re.search(pattern, title_lower):
             return False, f"Title matches excluded level pattern: '{pattern}' in '{title}'"
 
-    if TITLE_EXPERIENCE_PATTERN.search(title):
-        title_exp = parse_experience_years(title)
-        if title_exp:
-            min_y, max_y = title_exp
-            if _experience_exceeds_cap(min_y, max_y, cap):
-                return False, (
-                    f"Title requires more than {cap} years of experience "
-                    f"(parsed {min_y}-{max_y}): '{title}'"
-                )
-        else:
-            return False, f"Title contains experience requirement pattern: '{title}'"
+    ranges = []
+    for blob in (title, job_data.get("experience_required", "") or ""):
+        ranges.extend(_ranges_from_text(blob))
+    ranges.extend(_jd_experience_ranges(jd_text))
 
-    exp_str = job_data.get("experience_required", "").strip()
-    if exp_str:
-        exp_range = parse_experience_years(exp_str)
-        if exp_range:
-            min_y, max_y = exp_range
-            if _experience_exceeds_cap(min_y, max_y, cap):
-                return False, (
-                    f"Experience field ({exp_str}) requires more than {cap} years "
-                    f"(parsed {min_y}-{max_y})"
-                )
-
-    if jd_text:
-        jd_exp_matches = re.finditer(
-            r'(?:requir(?:e|ed|es)|must have|minimum|at least|\+|\b)\s*'
-            r'(\d+(?:\.\d+)?)\s*(?:\+|\-|to)?\s*(\d+(?:\.\d+)?)?\s*'
-            r'(?:years?|yrs?)\s*(?:of)?\s*(?:experience|exp)?',
-            jd_text.lower(),
-        )
-        for match in jd_exp_matches:
-            val1 = float(match.group(1)) if match.group(1) else 0.0
-            val2 = float(match.group(2)) if match.group(2) else 0.0
-            phrase = match.group(0)
-
-            if "+" in phrase:
-                max_y = val1 + 3.0
-            elif val2 > 0:
-                max_y = val2
-            else:
-                max_y = val1
-
-            if _experience_exceeds_cap(val1, max_y, cap):
-                return False, (
-                    f"JD requires more than {cap} years of experience: '{phrase.strip()}'"
-                )
+    for min_y, max_y in ranges:
+        if _experience_exceeds_cap(min_y, max_y, cap):
+            return False, (
+                f"Requires more than {cap:g} years of experience "
+                f"(parsed {min_y:g}-{max_y:g})"
+            )
 
     return True, "Passed experience boundaries check"
 
 
 def is_career_listing_eligible(job_data: dict) -> Tuple[bool, str]:
-    """
-    Stricter gate for direct career-site listings that often lack metadata.
-    Generic engineer titles need entry-level signals or a usable JD.
-    """
     title_lower = job_data.get("title", "").lower()
     jd_text = (job_data.get("jd_text") or "").strip()
 
@@ -195,19 +214,54 @@ def is_career_listing_eligible(job_data: dict) -> Tuple[bool, str]:
     return True, "Specific non-generic title"
 
 
-def is_pure_frontend_role(title: str) -> bool:
-    """Skip frontend-only roles; keep full-stack / backend roles that mention React."""
-    t = title.lower()
-    frontend_only = [
-        "frontend developer", "front-end developer", "front end developer",
-        "frontend engineer", "ui developer", "react developer", "angular developer",
-        "vue developer", "reactjs developer", "react.js developer",
-        ".net react developer",
-    ]
-    if any(p in t for p in frontend_only):
-        return True
-    if "full stack" in t or "fullstack" in t or "full-stack" in t or "backend" in t:
+def is_pure_frontend_role(title: str, jd_text: str = "") -> bool:
+    t = (title or "").lower()
+    if "react native" in t:
         return False
-    if re.search(r"\breact\b", t) and "full" not in t and "stack" not in t:
+    if any(k in t for k in FRONTEND_KEEP):
+        return False
+    if any(m in t for m in FRONTEND_MARKERS):
+        return True
+    jd = (jd_text or "")[:400].lower()
+    if jd and any(m in jd[:200] for m in ("this is a frontend", "this is a front-end", "front-end only")):
         return True
     return False
+
+
+def _contains_marker(blob: str, marker: str) -> bool:
+    return bool(re.search(rf'(?<![a-z0-9]){re.escape(marker)}(?![a-z0-9])', blob))
+
+
+def is_location_allowed(job_data: dict) -> Tuple[bool, str]:
+    location = (job_data.get("location") or "").strip()
+    title = job_data.get("title") or ""
+    jd = (job_data.get("jd_text") or "")[:1200]
+    platform = (job_data.get("platform") or "").lower()
+    blob = f"{location} {title} {jd}".lower()
+
+    has_india = any(_contains_marker(blob, m) for m in INDIA_MARKERS)
+    has_abroad = any(_contains_marker(blob, m) for m in ABROAD_MARKERS) or bool(US_STATE_RE.search(location))
+
+    if has_abroad and not has_india:
+        return False, f"Non-India location: '{location or title}'"
+    if has_india:
+        return True, "India location"
+    if platform in INDIA_PLATFORMS:
+        return True, "India job board"
+    loc = location.lower()
+    if not loc:
+        return False, "Missing location"
+    if "remote" in loc or "work from home" in loc or loc in {"wfh", "anywhere"}:
+        return False, f"Remote outside India: '{location}'"
+    return False, f"Non-India location: '{location}'"
+
+
+def passes_hard_filters(job_data: dict, max_years: float = MAX_JD_EXPERIENCE_YEARS) -> Tuple[bool, str]:
+    title = job_data.get("title") or ""
+    jd = job_data.get("jd_text") or ""
+    if is_pure_frontend_role(title, jd):
+        return False, f"Frontend role: '{title}'"
+    ok, reason = is_location_allowed(job_data)
+    if not ok:
+        return False, reason
+    return is_job_experience_valid(job_data, max_years=max_years)

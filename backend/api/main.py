@@ -248,20 +248,23 @@ def purge_stale_jobs(
 
 @app.post("/api/jobs/purge-experienced")
 def purge_experienced_jobs(db: Session = Depends(get_db)):
-    """Purge jobs that exceed experience limits or fail career-site eligibility."""
-    from backend.scrapers.filter_utils import is_job_experience_valid, is_career_listing_eligible
+    """Purge jobs that fail experience, frontend, or India-location filters."""
+    from backend.scrapers.filter_utils import is_career_listing_eligible, passes_hard_filters
 
     all_jobs = db.query(Job).all()
     purged_count = 0
     for job in all_jobs:
+        if job.status in {"applied", "interviewing", "offer"}:
+            continue
         job_dict = {
             "title": job.title,
             "company": job.company,
+            "location": job.location,
             "experience_required": job.experience_required,
             "jd_text": job.jd_text,
             "platform": job.platform,
         }
-        is_valid, _ = is_job_experience_valid(job_dict, max_years=settings.experience_years)
+        is_valid, _ = passes_hard_filters(job_dict, max_years=settings.experience_years)
         if is_valid and job.platform == "company_careers":
             is_valid, _ = is_career_listing_eligible(job_dict)
         if not is_valid:

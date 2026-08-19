@@ -11,9 +11,8 @@ from sqlalchemy.orm import Session
 from backend.applier.ats import detect_ats
 from backend.db.models import Job, SessionLocal
 from backend.scrapers.filter_utils import (
-    is_job_experience_valid,
-    is_pure_frontend_role,
     is_career_listing_eligible,
+    passes_hard_filters,
 )
 from backend.scrapers.scoring import score_job
 from backend.scrapers.registry import SCRAPER_REGISTRY, SCRAPER_LABELS, resolve_discovery_roles
@@ -47,12 +46,8 @@ def upsert_jobs(jobs: list, db: Session) -> int:
         if not url or url in seen_urls:
             continue
 
-        if is_pure_frontend_role(title):
-            logger.info(f"Skipping frontend role: {title}")
-            continue
-
-        is_valid, reason = is_job_experience_valid(job_data, max_years=max_exp_years)
-        if not is_valid:
+        ok, reason = passes_hard_filters(job_data, max_years=max_exp_years)
+        if not ok:
             logger.info(f"Hard filter excluded [{company} - {title}]: {reason}")
             continue
 

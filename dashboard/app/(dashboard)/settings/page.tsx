@@ -133,7 +133,7 @@ export default function SettingsPage() {
   };
 
   const handlePurgeExperienced = async () => {
-    if (!confirm('Remove jobs that exceed experience filters?')) return;
+    if (!confirm('Remove jobs that fail the 0-2 year, India-only, or no-frontend filters?')) return;
     await api.purgeExperiencedJobs();
   };
 

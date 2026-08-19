@@ -9,7 +9,7 @@ from loguru import logger
 from playwright.async_api import async_playwright
 
 from backend.scrapers.base import create_browser_context, normalize_job
-from backend.scrapers.filter_utils import is_job_experience_valid
+from backend.scrapers.filter_utils import passes_hard_filters
 from backend.scrapers.registry import resolve_discovery_roles
 from backend.config import settings
 from backend.job_freshness import NAUKRI_JOB_AGE_DAYS
@@ -103,8 +103,9 @@ async def scrape_naukri_jobs(
                                     "url": url,
                                     "experience_required": exp,
                                     "jd_text": "",
+                                    "platform": "naukri",
                                 }
-                                ok, _ = is_job_experience_valid(preview)
+                                ok, _ = passes_hard_filters(preview)
                                 if not ok:
                                     continue
 
@@ -127,7 +128,7 @@ async def scrape_naukri_jobs(
                                     pass
 
                                 job_data = {**preview, "jd_text": jd_text}
-                                ok, _ = is_job_experience_valid(job_data)
+                                ok, _ = passes_hard_filters(job_data)
                                 if not ok:
                                     continue
 

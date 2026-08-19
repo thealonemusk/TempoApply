@@ -83,9 +83,10 @@ def score_job(
             reasons.append(f"Location: {loc}")
             loc_hit = True
             break
-    if not loc_hit and ("remote" in location or "remote" in title_lower or "remote" in jd_lower):
-        score += 8
-        reasons.append("Remote-friendly")
+    if not loc_hit and ("remote" in location or "remote" in title_lower):
+        if any(m in location for m in ("india", "bengaluru", "bangalore", "hyderabad", "pune", "noida", "gurgaon", "gurugram")):
+            score += 8
+            reasons.append("Remote-friendly")
 
     if any(premium in company or company in premium for premium in PREMIUM_COMPANIES):
         score += 12

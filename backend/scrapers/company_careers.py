@@ -17,8 +17,8 @@ from bs4 import BeautifulSoup
 from backend.scrapers.filter_utils import (
     EXCLUDED_TITLE_KEYWORDS,
     INTERN_PATTERN,
-    is_job_experience_valid,
     is_career_listing_eligible,
+    passes_hard_filters,
 )
 from backend.scrapers.base import normalize_job
 from backend.scrapers.company_list import TOP_COMPANIES
@@ -110,8 +110,8 @@ def _is_workday_posting_fresh(posted_on: str) -> bool:
 
 
 def _passes_career_filters(job_data: dict) -> bool:
-    """Apply experience + career-site eligibility checks before returning a job."""
-    ok, reason = is_job_experience_valid(job_data)
+    """Apply experience, location, frontend, and career-site eligibility checks."""
+    ok, reason = passes_hard_filters(job_data)
     if not ok:
         logger.debug(f"Career filter rejected [{job_data.get('company')} - {job_data.get('title')}]: {reason}")
         return False

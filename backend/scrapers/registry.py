@@ -24,7 +24,6 @@ _DISCOVERY_EXTRA_ROLES = [
     "Python Developer",
     "Java Developer",
     "Golang Developer",
-    "React Developer",
     "Node.js Developer",
     "Cloud Engineer",
     "Data Engineer",
