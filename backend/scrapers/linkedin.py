@@ -3,6 +3,7 @@ LinkedIn Job Scraper — searches and scrapes jobs from LinkedIn public listings
 Uses the guest seeMoreJobPostings API with pagination for higher coverage.
 """
 import asyncio
+import re
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 from typing import List, Set
@@ -108,20 +109,35 @@ def _fetch_search_page(keywords: str, location: str, start: int, time_filter: st
     return _parse_search_cards(resp.text)
 
 
+def _linkedin_job_id(url: str) -> str:
+    match = re.search(r"(\d{8,})", url or "")
+    return match.group(1) if match else ""
+
+
+def _jd_from_html(html) -> str:
+    soup = BeautifulSoup(html, "html.parser")
+    jd_el = soup.find(class_="show-more-less-html__markup")
+    if not jd_el:
+        jd_el = soup.find(class_="description__text")
+    return jd_el.get_text(separator="\n").strip() if jd_el else ""
+
+
 def _scrape_job_detail_bs4(url: str) -> dict:
-    try:
-        resp = requests.get(url, headers=HEADERS, timeout=15)
-        soup = BeautifulSoup(resp.content, "html.parser")
-
-        jd_el = soup.find(class_="show-more-less-html__markup")
-        if not jd_el:
-            jd_el = soup.find(class_="description__text")
-
-        jd_text = jd_el.get_text(separator="\n").strip() if jd_el else ""
-        return {"jd_text": jd_text, "easy_apply": False, "recruiter_profile": ""}
-    except Exception as e:
-        logger.debug(f"Could not scrape job detail {url}: {e}")
-        return {"jd_text": "", "easy_apply": False, "recruiter_name": "", "recruiter_profile": ""}
+    empty = {"jd_text": "", "easy_apply": False, "recruiter_profile": ""}
+    job_id = _linkedin_job_id(url)
+    pages = []
+    if job_id:
+        pages.append(f"https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{job_id}")
+    pages.append(url)
+    for page_url in pages:
+        try:
+            resp = requests.get(page_url, headers=HEADERS, timeout=15)
+            jd_text = _jd_from_html(resp.content)
+            if len(jd_text) >= 80:
+                return {"jd_text": jd_text, "easy_apply": False, "recruiter_profile": ""}
+        except Exception as exc:
+            logger.debug(f"Could not scrape job detail {page_url}: {exc}")
+    return empty
 
 
 def _collect_listings(

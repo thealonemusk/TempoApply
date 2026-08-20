@@ -9,13 +9,16 @@ from typing import Optional, Tuple
 EXCLUDED_TITLE_KEYWORDS = [
     "senior", "sr.", "sr ", "lead", "staff", "principal", "manager",
     "director", "head", "architect", "sde 2", "sde-2", "sde2", "sde 3", "sde-3",
-    "sde3", "sde ii", "sde-ii", "sde iii", "sde-iii", "level 2", "level 3", "l2", "l3",
+    "sde3", "sde ii", "sde-ii", "sde iii", "sde-iii", "level 2", "level 3", "level 4",
+    "l2", "l3", "l4", "l5",
     "expert", "vp", "vice president", "chief", "tech lead", "team lead",
-    "consultant", "specialist",
+    "consultant", "specialist", "advanced software", "advanced engineer",
+    "advanced developer",
 ]
 
 EXCLUDED_TITLE_REGEXES = [
-    r'\b(?:ii|iii|iv|v)\b',
+    r'\b(?:ii|iii|iv|v)(?:new)?\b',
+    r'\bl[2-7]\b',
     r'(?<!\d)[-_\s](?:2|3|4|5)(?!(?:\s*\+|\s*(?:years?|yrs?|yr|y)\b|\s+to\s+\d))',
 ]
 
@@ -59,13 +62,15 @@ EXP_PREFIX_RE = re.compile(
     re.IGNORECASE,
 )
 JD_EXP_RE = re.compile(
-    rf'(?:experience|exp(?:erience)?|requir(?:e|ed|es|ing)|must have|minimum|min\.?|at least|atleast)'
-    rf'.{{0,60}}?(\d+(?:\.\d+)?)\s*(?:\+|plus)?\s*(?:-|to|–|—)?\s*(\d+(?:\.\d+)?)?\s*{YEAR_TOKEN}'
-    rf'|'
-    rf'(\d+(?:\.\d+)?)\s*(?:\+|plus)?\s*(?:-|to|–|—)?\s*(\d+(?:\.\d+)?)?\s*{YEAR_TOKEN}'
-    rf'\s+(?:of\s+)?(?:relevant\s+)?(?:professional\s+)?(?:industry\s+)?(?:software\s+)?(?:work\s+)?(?:experience|exp)\b',
-    re.IGNORECASE | re.DOTALL,
+    r'(\d+(?:\.\d+)?)\s*(?:\+|plus)?\s*(?:-|to|–|—)?\s*(\d+(?:\.\d+)?)?\s*(?:\+|plus)?\s*(?:years?|yrs?|yr)\b',
+    re.IGNORECASE,
 )
+JD_HISTORY_BEFORE_RE = re.compile(
+    r'(?:for|past|last|next|over the(?: past| last)?|in the last|since|founded|'
+    r'nearly|almost|about|previous|prior|spanning)\s+$',
+    re.IGNORECASE,
+)
+MIN_JD_CHARS = 80
 
 INDIA_PLATFORMS = {"naukri", "instahyre", "indeed"}
 INDIA_MARKERS = (
@@ -150,21 +155,23 @@ def parse_experience_years(text: str) -> Optional[Tuple[float, float]]:
 
 def _jd_experience_ranges(jd_text: str) -> list:
     found = []
-    for match in JD_EXP_RE.finditer(jd_text or ""):
-        a, b, c, d = match.group(1), match.group(2), match.group(3), match.group(4)
-        phrase = match.group(0)
-        if a:
-            min_y = float(a)
-            max_y = float(b) if b else (min_y + 3.0 if "+" in phrase else min_y)
-        else:
-            min_y = float(c)
-            max_y = float(d) if d else (min_y + 3.0 if "+" in phrase else min_y)
+    text = jd_text or ""
+    for match in JD_EXP_RE.finditer(text):
+        before = text[max(0, match.start() - 48):match.start()]
+        if JD_HISTORY_BEFORE_RE.search(before):
+            continue
+        min_y = float(match.group(1))
+        max_y = float(match.group(2)) if match.group(2) else min_y
+        if "+" in match.group(0) and not match.group(2):
+            max_y = min_y + 3.0
+        if min_y > 15:
+            continue
         found.append(_pair(min_y, max_y))
     return found
 
 
 def is_job_experience_valid(job_data: dict, max_years: float = MAX_JD_EXPERIENCE_YEARS) -> Tuple[bool, str]:
-    cap = min(float(max_years), MAX_JD_EXPERIENCE_YEARS)
+    cap = MAX_JD_EXPERIENCE_YEARS
     title = job_data.get("title", "").strip()
     title_lower = title.lower()
     jd_text = job_data.get("jd_text", "").strip()
@@ -191,6 +198,10 @@ def is_job_experience_valid(job_data: dict, max_years: float = MAX_JD_EXPERIENCE
                 f"Requires more than {cap:g} years of experience "
                 f"(parsed {min_y:g}-{max_y:g})"
             )
+
+    platform = (job_data.get("platform") or "").lower()
+    if platform == "linkedin" and len(jd_text) < MIN_JD_CHARS:
+        return False, "LinkedIn JD missing; cannot verify experience"
 
     return True, "Passed experience boundaries check"
 
