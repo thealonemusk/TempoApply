@@ -19,6 +19,7 @@ from backend.scrapers.registry import SCRAPER_REGISTRY, SCRAPER_LABELS, resolve_
 from backend.config import settings
 from backend.platforms import DEFAULT_SCAN_PLATFORMS
 from backend.job_freshness import JOB_FRESHNESS_HOURS
+from backend.scan_control import clear_stop, should_stop
 
 
 def upsert_jobs(jobs: list, db: Session) -> int:
@@ -160,10 +161,10 @@ async def run_scan_pipeline(
     platforms = platforms or list(DEFAULT_SCAN_PLATFORMS)
     roles = resolve_discovery_roles(settings.target_roles_list)
     logger.info(f"Targeting roles (discovery): {roles}")
+    clear_stop()
 
     all_raw_jobs = []
     tasks = []
-    platform_names = []
 
     for key in platforms:
         scrape_fn = SCRAPER_REGISTRY.get(key)
@@ -174,34 +175,45 @@ async def run_scan_pipeline(
         label = SCRAPER_LABELS.get(key, key)
 
         async def run_one(fn=scrape_fn, name=key, display=label):
+            if should_stop():
+                logger.info(f"Scan stop requested — skipping {display}")
+                return name, []
             logger.info(f"Scraping {display}...")
-            return await fn(roles=roles, max_jobs=max_jobs_per_platform, headless=headless)
+            try:
+                jobs = await fn(roles=roles, max_jobs=max_jobs_per_platform, headless=headless)
+            except Exception as exc:
+                logger.error(f"{name} scraping error: {exc}")
+                return name, []
+            return name, jobs or []
 
         tasks.append(run_one())
-        platform_names.append(key)
-
-    if tasks:
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        for name, result in zip(platform_names, results):
-            if isinstance(result, Exception):
-                logger.error(f"{name} scraping error: {result}")
-            elif result:
-                all_raw_jobs.extend(result)
-                logger.info(f"{name}: {len(result)} jobs")
-
-    logger.info(f"Total raw jobs found: {len(all_raw_jobs)}")
-
-    analyzed_jobs = list(all_raw_jobs)
 
     db = SessionLocal()
     stale_removed = 0
     visited_removed = 0
+    new_count = 0
     try:
         visited_removed = purge_visited_jobs(db)
         if visited_removed:
             logger.info(f"Removed {visited_removed} previously visited jobs")
 
-        new_count = upsert_jobs(analyzed_jobs, db)
+        if tasks:
+            for finished in asyncio.as_completed(tasks):
+                try:
+                    name, result = await finished
+                except Exception as exc:
+                    logger.error(f"Platform scraping error: {exc}")
+                    continue
+                if not result:
+                    logger.info(f"{name}: 0 jobs")
+                    continue
+                all_raw_jobs.extend(result)
+                added = upsert_jobs(result, db)
+                new_count += added
+                logger.info(f"{name}: {len(result)} jobs ({added} new in db)")
+
+        logger.info(f"Total raw jobs found: {len(all_raw_jobs)}")
+
         stale_removed = purge_stale_discovered_jobs(db, max_age_hours=JOB_FRESHNESS_HOURS)
         if stale_removed:
             logger.info(f"Purged {stale_removed} stale discovered jobs (>{JOB_FRESHNESS_HOURS}h)")
@@ -210,7 +222,7 @@ async def run_scan_pipeline(
 
     return {
         "total_scraped": len(all_raw_jobs),
-        "qualified": len(analyzed_jobs),
+        "qualified": len(all_raw_jobs),
         "new_in_db": new_count,
         "visited_removed": visited_removed,
         "stale_removed": stale_removed,

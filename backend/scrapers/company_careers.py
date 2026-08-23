@@ -22,6 +22,7 @@ from backend.scrapers.filter_utils import (
 )
 from backend.scrapers.base import normalize_job
 from backend.scrapers.company_list import TOP_COMPANIES
+from backend.scan_control import should_stop
 
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
@@ -602,7 +603,11 @@ async def scrape_company_career_jobs(
     semaphore = asyncio.Semaphore(12)  # max 12 concurrent requests
 
     async def rate_limited_scrape(company: dict) -> List[dict]:
+        if should_stop():
+            return []
         async with semaphore:
+            if should_stop():
+                return []
             result = await scrape_one(company)
             await asyncio.sleep(0.3)   # polite delay
             return result

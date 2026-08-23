@@ -34,6 +34,9 @@ export const api = {
       }),
     }),
 
+  stopScan: () =>
+    request<{ message: string; running: boolean }>('/api/scan/stop', { method: 'POST' }),
+
   updateJobStatus: (id: string, status: string) =>
     request<{ success: boolean }>(`/api/jobs/${id}/status`, {
       method: 'PATCH',

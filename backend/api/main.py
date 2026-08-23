@@ -300,7 +300,11 @@ async def start_scan(req: ScanRequest, background_tasks: BackgroundTasks):
         raise HTTPException(status_code=409, detail="Scan already running")
 
     async def do_scan():
+        from backend.scan_control import clear_stop
+
+        clear_stop()
         _scan_status["running"] = True
+        _scan_status["last_result"] = None
         try:
             from backend.pipeline import run_scan_pipeline
             result = await run_scan_pipeline(
@@ -322,6 +326,16 @@ async def start_scan(req: ScanRequest, background_tasks: BackgroundTasks):
 @app.get("/api/scan/status")
 def get_scan_status():
     return _scan_status
+
+
+@app.post("/api/scan/stop")
+def stop_scan():
+    from backend.scan_control import request_stop
+
+    if not _scan_status["running"]:
+        return {"message": "Scan is not running", "running": False}
+    request_stop()
+    return {"message": "Stop requested", "running": True}
 
 
 # ─── Auto-apply ──────────────────────────────────────────────────────────────

@@ -26,7 +26,12 @@ from backend.applier.filler import (
     upload_resume,
     wait_settled,
 )
-from backend.applier.linkedin_apply import apply_linkedin_easy, open_from_linkedin
+from backend.applier.linkedin_apply import (
+    apply_linkedin_easy,
+    offsite_page,
+    open_from_linkedin,
+    page_opened_since,
+)
 from backend.applier.profile import ApplicantProfile
 from backend.applier.workday import apply_workday
 
@@ -193,17 +198,17 @@ async def apply_lever(
     return await _finish(page, page, profile, auto_submit, job_id, info)
 
 
-async def follow_external_apply(page: Page) -> str:
-    """From an aggregator posting, follow company-site apply if present. Returns ATS type."""
+async def follow_external_apply(page: Page) -> tuple[Page, str]:
+    """From an aggregator or career posting, follow company-site apply if present."""
     ats = detect_ats(page.url)
     if ats in {"greenhouse", "lever", "workday", "ashby"}:
-        return ats
+        return page, ats
 
     try:
         found = first_ats_url(await page.content())
         if found:
             await _goto(page, found)
-            return detect_ats(page.url) or "custom"
+            return page, detect_ats(page.url) or "custom"
     except Exception:
         pass
 
@@ -218,29 +223,50 @@ async def follow_external_apply(page: Page) -> str:
         'a:has-text("Apply on company website")',
         'a:has-text("Apply on company")',
         'a:has-text("company website")',
+        'a:has-text("Apply now")',
+        'a:has-text("Apply Now")',
+        'button:has-text("Apply now")',
+        'button:has-text("Apply Now")',
+        'button:has-text("Apply")',
+        'a:has-text("Apply")',
     ]
     for sel in selectors:
         loc = page.locator(sel)
         try:
-            if not await loc.count():
+            if not await loc.count() or not await loc.first.is_visible():
+                continue
+            text = ((await loc.first.inner_text()) or "").lower()
+            if "easy apply" in text:
                 continue
             href = await loc.first.get_attribute("href")
+            existing = list(page.context.pages)
             if href:
                 target = urljoin(page.url, href)
                 if urlparse(target).netloc and urlparse(target).netloc != urlparse(page.url).netloc:
                     await _goto(page, target)
-                    return detect_ats(page.url) or "custom"
+                    return page, detect_ats(page.url) or "custom"
             await loc.first.click()
-            await wait_settled(page, 1200)
-            return detect_ats(page.url) or "custom"
+            opened = await page_opened_since(page.context, existing, timeout_ms=10000)
+            if opened:
+                page = opened
+            else:
+                await wait_settled(page, 1200)
+                page = await offsite_page(page)
+            return page, detect_ats(page.url) or "custom"
         except Exception:
             continue
 
+    existing = list(page.context.pages)
     clicked = await click_apply(page)
     if clicked:
-        await wait_settled(page, 1200)
-        return detect_ats(page.url) or "custom"
-    return detect_ats(page.url) or "custom"
+        opened = await page_opened_since(page.context, existing, timeout_ms=10000)
+        if opened:
+            page = opened
+        else:
+            await wait_settled(page, 1200)
+            page = await offsite_page(page)
+        return page, detect_ats(page.url) or "custom"
+    return page, detect_ats(page.url) or "custom"
 
 
 async def apply_custom(
@@ -253,8 +279,22 @@ async def apply_custom(
     job_id: str,
 ) -> Dict[str, Any]:
     await dismiss_overlays(page)
+    existing = list(page.context.pages)
     await click_apply(page)
-    await wait_settled(page)
+    opened = await page_opened_since(page.context, existing, timeout_ms=10000)
+    if opened:
+        page = opened
+        await dismiss_overlays(page)
+    else:
+        await wait_settled(page)
+        page = await offsite_page(page)
+    ats = detect_ats(page.url)
+    if ats == "workday":
+        return await apply_workday(page, profile, resume, job_title, company, auto_submit, job_id)
+    if ats == "greenhouse":
+        return await apply_greenhouse(page, profile, resume, job_title, company, auto_submit, job_id)
+    if ats == "lever":
+        return await apply_lever(page, profile, resume, job_title, company, auto_submit, job_id)
     scope = await application_frame(page)
     uploaded = await upload_resume(scope, resume, page=page)
     info = await fill_form(scope, profile, job_title, company)
@@ -293,7 +333,9 @@ async def apply_on_page(
 ) -> Dict[str, Any]:
     await _goto(page, url)
     page = await open_from_linkedin(page, jd_text)
-    ats = await follow_external_apply(page)
+    page = await offsite_page(page)
+    page, ats = await follow_external_apply(page)
+    page = await offsite_page(page)
     logger.info(f"Applying via ATS={ats} url={page.url}")
 
     if ats == "unknown" and "linkedin.com" in (page.url or "").lower():

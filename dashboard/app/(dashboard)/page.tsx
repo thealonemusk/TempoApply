@@ -86,6 +86,15 @@ export default function JobsPage() {
     }
   };
 
+  const handleStopScan = async () => {
+    if (!scanning) return;
+    try {
+      await api.stopScan();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Could not stop scan');
+    }
+  };
+
   const handleStatusChange = async (id: string, status: string) => {
     await api.updateJobStatus(id, status);
     setJobs((prev) => prev.map((j) => (j.id === id ? { ...j, status: status as Job['status'] } : j)));
@@ -237,6 +246,7 @@ export default function JobsPage() {
             onClear={handleClearJobs}
             onApplyAll={handleApplyAll}
             onStopApply={handleStopApply}
+            onStopScan={handleStopScan}
           />
         </div>
       </header>

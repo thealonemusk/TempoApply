@@ -170,7 +170,11 @@ def _jd_experience_ranges(jd_text: str) -> list:
     return found
 
 
-def is_job_experience_valid(job_data: dict, max_years: float = MAX_JD_EXPERIENCE_YEARS) -> Tuple[bool, str]:
+def is_job_experience_valid(
+    job_data: dict,
+    max_years: float = MAX_JD_EXPERIENCE_YEARS,
+    require_jd: bool = True,
+) -> Tuple[bool, str]:
     cap = MAX_JD_EXPERIENCE_YEARS
     title = job_data.get("title", "").strip()
     title_lower = title.lower()
@@ -200,7 +204,7 @@ def is_job_experience_valid(job_data: dict, max_years: float = MAX_JD_EXPERIENCE
             )
 
     platform = (job_data.get("platform") or "").lower()
-    if platform == "linkedin" and len(jd_text) < MIN_JD_CHARS:
+    if require_jd and platform == "linkedin" and len(jd_text) < MIN_JD_CHARS:
         return False, "LinkedIn JD missing; cannot verify experience"
 
     return True, "Passed experience boundaries check"
@@ -267,7 +271,11 @@ def is_location_allowed(job_data: dict) -> Tuple[bool, str]:
     return False, f"Non-India location: '{location}'"
 
 
-def passes_hard_filters(job_data: dict, max_years: float = MAX_JD_EXPERIENCE_YEARS) -> Tuple[bool, str]:
+def passes_hard_filters(
+    job_data: dict,
+    max_years: float = MAX_JD_EXPERIENCE_YEARS,
+    require_jd: bool = True,
+) -> Tuple[bool, str]:
     title = job_data.get("title") or ""
     jd = job_data.get("jd_text") or ""
     if is_pure_frontend_role(title, jd):
@@ -275,4 +283,4 @@ def passes_hard_filters(job_data: dict, max_years: float = MAX_JD_EXPERIENCE_YEA
     ok, reason = is_location_allowed(job_data)
     if not ok:
         return False, reason
-    return is_job_experience_valid(job_data, max_years=max_years)
+    return is_job_experience_valid(job_data, max_years=max_years, require_jd=require_jd)

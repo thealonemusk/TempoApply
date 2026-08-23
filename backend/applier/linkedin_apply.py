@@ -1,6 +1,7 @@
 """Open a LinkedIn job, log in if needed, then follow the company ATS apply URL."""
 from __future__ import annotations
 
+import asyncio
 from typing import Optional
 from urllib.parse import unquote, urlparse
 
@@ -107,6 +108,51 @@ async def _extract_offsite_url(page: Page, jd_text: str = "") -> str:
     return ""
 
 
+async def page_opened_since(context, existing_pages, timeout_ms: int = 15000) -> Optional[Page]:
+    """Return a tab that appeared after a click (company site / ATS)."""
+    existing = {id(p) for p in existing_pages}
+    waited = 0
+    while waited < timeout_ms:
+        for p in context.pages:
+            if id(p) in existing or p.is_closed():
+                continue
+            try:
+                await p.wait_for_load_state("domcontentloaded", timeout=25000)
+            except Exception:
+                pass
+            try:
+                await p.bring_to_front()
+            except Exception:
+                pass
+            await wait_settled(p, 800)
+            return p
+        await asyncio.sleep(0.25)
+        waited += 250
+    return None
+
+
+async def offsite_page(page: Page) -> Page:
+    """Use the company/ATS tab if LinkedIn left one open."""
+    best = None
+    for p in page.context.pages:
+        if p.is_closed():
+            continue
+        u = (p.url or "").lower()
+        if not u.startswith("http") or "linkedin.com" in u:
+            continue
+        if detect_ats(p.url) != "unknown":
+            best = p
+            break
+        best = p
+    if best is None:
+        return page
+    try:
+        await best.bring_to_front()
+    except Exception:
+        pass
+    return best
+
+
 async def _click_offsite_apply(page: Page) -> Optional[Page]:
     context = page.context
     selectors = (
@@ -117,6 +163,9 @@ async def _click_offsite_apply(page: Page) -> Optional[Page]:
         'a:has-text("Apply on company website")',
         'a:has-text("Apply on company")',
         'button:has-text("Apply on company website")',
+        'button:has-text("Apply on company")',
+        'a:has-text("Apply")',
+        'button:has-text("Apply")',
     )
     for sel in selectors:
         loc = page.locator(sel)
@@ -124,27 +173,36 @@ async def _click_offsite_apply(page: Page) -> Optional[Page]:
             if not await loc.count() or not await loc.first.is_visible():
                 continue
             text = ((await loc.first.inner_text()) or "").lower()
-            if "easy apply" in text:
+            label = (await loc.first.get_attribute("aria-label") or "").lower()
+            if "easy apply" in text or "easy apply" in label:
                 continue
-            try:
-                async with context.expect_page(timeout=6000) as new_info:
-                    await loc.first.click(timeout=4000)
-                new_page = await new_info.value
-                await new_page.wait_for_load_state("domcontentloaded", timeout=30000)
-                return new_page
-            except Exception:
-                await loc.first.click(timeout=4000)
-                await wait_settled(page, 1500)
+            existing = list(context.pages)
+            await loc.first.click(timeout=4000)
+            opened = await page_opened_since(context, existing)
+            if opened:
+                logger.info(f"LinkedIn opened company tab: {opened.url}")
+                return opened
+            await wait_settled(page, 1500)
+            if "linkedin.com" not in (page.url or "").lower():
                 return page
+            adopted = await offsite_page(page)
+            if adopted != page:
+                logger.info(f"LinkedIn company tab already open: {adopted.url}")
+                return adopted
+            return page
         except Exception:
             continue
+    existing = list(context.pages)
     await click_named_button(
         page,
         ("Apply on company website", "Continue to apply"),
         timeout=3000,
     )
+    opened = await page_opened_since(context, existing, timeout_ms=8000)
+    if opened:
+        return opened
     await wait_settled(page, 1200)
-    return page
+    return await offsite_page(page)
 
 
 async def open_from_linkedin(page: Page, jd_text: str = "") -> Page:
@@ -188,6 +246,7 @@ async def open_from_linkedin(page: Page, jd_text: str = "") -> Page:
         return page
 
     next_page = await _click_offsite_apply(page)
+    next_page = await offsite_page(next_page)
     await dismiss_overlays(next_page)
     if detect_ats(next_page.url) != "unknown":
         return next_page
@@ -195,7 +254,8 @@ async def open_from_linkedin(page: Page, jd_text: str = "") -> Page:
     if offsite and detect_ats(offsite) != "unknown":
         await next_page.goto(offsite, wait_until="domcontentloaded", timeout=45000)
         await wait_settled(next_page)
-    return next_page
+        return next_page
+    return await offsite_page(next_page)
 
 
 async def _is_easy_apply(page: Page) -> bool:

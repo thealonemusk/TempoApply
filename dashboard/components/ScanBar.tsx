@@ -12,6 +12,7 @@ interface ScanBarProps {
   onClear: () => void;
   onApplyAll?: () => void;
   onStopApply?: () => void;
+  onStopScan?: () => void;
 }
 
 export function ScanBar({
@@ -22,6 +23,7 @@ export function ScanBar({
   onClear,
   onApplyAll,
   onStopApply,
+  onStopScan,
 }: ScanBarProps) {
   return (
     <div className="flex items-center gap-2">
@@ -33,6 +35,12 @@ export function ScanBar({
         <Plus className="h-4 w-4" />
         Add
       </Button>
+      {scanning && onStopScan && (
+        <Button variant="danger" size="sm" onClick={onStopScan}>
+          <Square className="h-3.5 w-3.5 fill-current" />
+          Stop
+        </Button>
+      )}
       {onApplyAll && applying && onStopApply && (
         <Button variant="danger" size="sm" onClick={onStopApply}>
           <Square className="h-3.5 w-3.5 fill-current" />

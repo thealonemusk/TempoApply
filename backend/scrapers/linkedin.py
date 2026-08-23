@@ -5,6 +5,7 @@ Uses the guest seeMoreJobPostings API with pagination for higher coverage.
 import asyncio
 import re
 import urllib.parse
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from typing import List, Set
 
@@ -15,6 +16,7 @@ from loguru import logger
 from backend.scrapers.base import normalize_job
 from backend.scrapers.filter_utils import passes_hard_filters
 from backend.scrapers.registry import resolve_discovery_roles
+from backend.scan_control import should_stop
 from backend.config import settings
 from backend.job_freshness import LINKEDIN_TIME_FILTER
 
@@ -32,7 +34,7 @@ EXTRA_LOCATIONS = [
 ]
 SKIP_SEARCH_LOCATIONS = {"remote", "work from home", "wfh", "anywhere"}
 
-LINKEDIN_PAGES = 12
+LINKEDIN_PAGES = 3
 PAGE_SIZE = 10
 JD_WORKERS = 12
 
@@ -56,18 +58,9 @@ def _search_queries(role: str) -> List[str]:
         return []
     queries = [base]
     lower = base.lower()
-    variants = [
-        "entry level",
-        "junior",
-        "fresher",
-        "associate",
-        "0-2 years",
-        "new grad",
-    ]
-    for variant in variants:
-        if variant not in lower:
-            queries.append(f"{base} {variant}")
-    return queries[:6]
+    if "0-2 years" not in lower:
+        queries.append(f"{base} 0-2 years")
+    return queries
 
 
 def _parse_search_cards(html: str) -> List[dict]:
@@ -153,6 +146,8 @@ def _collect_listings(
             for query in _search_queries(role):
                 for location in locations:
                     for page in range(LINKEDIN_PAGES):
+                        if should_stop():
+                            return listings
                         start = page * PAGE_SIZE
                         try:
                             batch = _fetch_search_page(query, location, start, time_filter)
@@ -179,7 +174,7 @@ def _collect_listings(
                                 "jd_text": "",
                                 "platform": "linkedin",
                             }
-                            ok, _ = passes_hard_filters(preview)
+                            ok, _ = passes_hard_filters(preview, require_jd=False)
                             if not ok:
                                 continue
 
@@ -203,13 +198,28 @@ def _enrich_listings(listings: List[dict]) -> List[dict]:
     with ThreadPoolExecutor(max_workers=JD_WORKERS) as pool:
         details = list(pool.map(_scrape_job_detail_bs4, [j["url"] for j in listings]))
 
+    reasons: Counter = Counter()
     enriched = []
     for listing, detail in zip(listings, details):
         job_data = {**listing, **detail, "platform": "linkedin"}
-        ok, _ = passes_hard_filters(job_data)
+        ok, reason = passes_hard_filters(job_data)
         if not ok:
+            if "JD missing" in reason:
+                reasons["jd_missing"] += 1
+            elif "more than" in reason:
+                reasons["experience_over_2y"] += 1
+            elif "excluded" in reason.lower() or "excluded level" in reason.lower():
+                reasons["senior_title"] += 1
+            elif "Frontend" in reason:
+                reasons["frontend"] += 1
+            elif "intern" in reason.lower():
+                reasons["intern"] += 1
+            else:
+                reasons["location_or_other"] += 1
             continue
         enriched.append(normalize_job(job_data, "linkedin"))
+    if reasons:
+        logger.info(f"LinkedIn: dropped {sum(reasons.values())} after JD — {dict(reasons)}")
     return enriched
 
 
