@@ -64,17 +64,43 @@ async def wait_for_linkedin_login(page: Page, seconds: int = LOGIN_WAIT_SEC) -> 
 
 async def ensure_linkedin_session(page: Page) -> bool:
     """Reuse the persistent Chrome profile; wait if this window still needs a sign-in."""
+    signed_in, _ = await linkedin_session_state(page)
+    return signed_in
+
+
+async def linkedin_session_state(
+    page: Page, wait_seconds: int = LOGIN_WAIT_SEC
+) -> tuple[bool, str]:
+    """
+    Preflight check for the persistent profile's LinkedIn session.
+
+    Returns (signed_in, human-readable detail). Callers use the detail to tell
+    the user *why* a run could not start instead of silently blocking on a
+    login prompt for minutes.
+    """
     try:
-        await page.goto("https://www.linkedin.com/feed", wait_until="domcontentloaded", timeout=45000)
+        await page.goto(
+            "https://www.linkedin.com/feed", wait_until="domcontentloaded", timeout=45000
+        )
         await wait_settled(page, 1500)
         await dismiss_overlays(page)
     except Exception as exc:
-        logger.warning(f"LinkedIn login page failed: {exc}")
-        return False
+        logger.warning(f"LinkedIn feed did not load: {exc}")
+        return False, "LinkedIn did not load"
+
     if await _linkedin_logged_in(page):
         logger.info("LinkedIn session already active")
-        return True
-    return await wait_for_linkedin_login(page)
+        return True, "session active"
+
+    if wait_seconds <= 0:
+        return False, "not signed in"
+
+    signed_in = await wait_for_linkedin_login(page, seconds=wait_seconds)
+    if signed_in:
+        return True, "signed in during preflight"
+    if should_stop():
+        return False, "stopped by user"
+    return False, f"no sign-in within {wait_seconds}s"
 
 
 async def linkedin_login_if_needed(page: Page) -> bool:
@@ -278,15 +304,19 @@ async def apply_linkedin_easy(
     company: str,
     auto_submit: bool,
     job_id: str,
+    report=None,
 ) -> dict:
     from backend.applier.filler import (
         fill_form,
         finish_application,
+        noop_report,
         screenshot_failure,
         unfilled_required,
         upload_resume,
         wait_settled,
     )
+
+    report = report or noop_report
     from pathlib import Path
 
     log_dir = Path(__file__).resolve().parent.parent.parent / "data" / "apply_logs"
@@ -294,6 +324,7 @@ async def apply_linkedin_easy(
     try:
         await btn.click(timeout=4000)
     except Exception:
+        report("error", "Easy Apply button not clickable", False)
         await screenshot_failure(page, log_dir / f"{job_id}.png")
         return {
             "status": "needs_review",
@@ -304,9 +335,11 @@ async def apply_linkedin_easy(
     info = {"filled": 0, "unknown_required": [], "resume_uploaded": False}
     if await upload_resume(page, resume, page=page):
         info["resume_uploaded"] = True
+        report("upload", "resume attached", True)
     extra = await fill_form(page, profile, job_title, company)
     info["filled"] += extra.get("filled", 0)
     info["unknown_required"] = extra.get("unknown_required") or []
+    report("fill", f"{info['filled']} fields", bool(info["filled"]))
 
     for _ in range(8):
         leftover = await unfilled_required(page)
@@ -332,6 +365,7 @@ async def apply_linkedin_easy(
                 continue
         if not moved:
             break
+        report("next", "advanced Easy Apply step", True)
         await wait_settled(page, 900)
         extra = await fill_form(page, profile, job_title, company)
         info["filled"] += extra.get("filled", 0)

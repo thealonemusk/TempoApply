@@ -63,6 +63,11 @@ def normalize_job(raw: dict, platform: str) -> dict:
     from backend.applier.ats import detect_ats
 
     url = raw.get("url", "").strip()
+    apply_url = raw.get("apply_url", "").strip()
+    # A resolved ATS link is a far better signal than the aggregator URL.
+    ats_type = raw.get("ats_type") or detect_ats(apply_url) or detect_ats(url)
+    if ats_type == "unknown" and apply_url:
+        ats_type = detect_ats(apply_url)
     return {
         "title": raw.get("title", "").strip(),
         "company": raw.get("company", "").strip(),
@@ -75,7 +80,8 @@ def normalize_job(raw: dict, platform: str) -> dict:
         "easy_apply": raw.get("easy_apply", False),
         "recruiter_name": raw.get("recruiter_name", "").strip(),
         "recruiter_profile": raw.get("recruiter_profile", "").strip(),
-        "ats_type": raw.get("ats_type") or detect_ats(url),
+        "apply_url": apply_url,
+        "ats_type": ats_type,
         "relevance_score": 0.0,
         "fit_reason": "",
         "missing_skills": "[]",

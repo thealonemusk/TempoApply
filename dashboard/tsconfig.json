@@ -25,7 +25,8 @@
       "@/*": [
         "./*"
       ]
-    }
+    },
+    "target": "es2020"
   },
   "include": [
     "next-env.d.ts",

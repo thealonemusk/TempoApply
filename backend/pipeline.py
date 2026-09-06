@@ -8,7 +8,9 @@ from datetime import datetime, timedelta
 from loguru import logger
 from sqlalchemy.orm import Session
 
-from backend.applier.ats import detect_ats
+import re
+
+from backend.applier.ats import apply_method, detect_ats, is_auto_appliable
 from backend.db.models import Job, SessionLocal
 from backend.scrapers.filter_utils import (
     is_career_listing_eligible,
@@ -19,7 +21,39 @@ from backend.scrapers.registry import SCRAPER_REGISTRY, SCRAPER_LABELS, resolve_
 from backend.config import settings
 from backend.platforms import DEFAULT_SCAN_PLATFORMS
 from backend.job_freshness import JOB_FRESHNESS_HOURS
+from backend.runtime.events import RunTracker
 from backend.scan_control import clear_stop, should_stop
+
+
+# The same role often appears twice: once on an aggregator and once on the
+# employer's own career site, where the title carries a location or work-mode
+# suffix. Normalising both to a common form lets the two collide.
+_WORK_MODE = re.compile(r"\((?:remote|hybrid|on-?site)[^)]*\)", re.I)
+
+_LOCATION_SUFFIX = re.compile(
+    r"[,\-–]\s*(?:india|bengaluru|bangalore|hyderabad|pune|noida|gurgaon|"
+    r"gurugram|chennai|mumbai|kolkata|ahmedabad|remote)(?![a-z]).*$",
+    re.I,
+)
+
+
+def normalize_title(title: str) -> str:
+    """Collapse a posting title to a comparable form for deduplication."""
+    cleaned = _WORK_MODE.sub(" ", title or "")
+    cleaned = _LOCATION_SUFFIX.sub("", cleaned)
+    return re.sub(r"[^a-z0-9]+", " ", cleaned.lower()).strip()
+
+
+def _appliable_rank(job_data: dict) -> int:
+    """Lower sorts first: prefer the copy auto-apply can actually submit."""
+    method = apply_method(
+        url=job_data.get("url", ""),
+        apply_url=job_data.get("apply_url", ""),
+        ats_type=job_data.get("ats_type", ""),
+        easy_apply=bool(job_data.get("easy_apply")),
+        platform=job_data.get("platform", ""),
+    )
+    return 0 if is_auto_appliable(method) else 1
 
 
 def upsert_jobs(jobs: list, db: Session) -> int:
@@ -32,6 +66,11 @@ def upsert_jobs(jobs: list, db: Session) -> int:
     min_score = getattr(settings, "min_relevance_score", 55)
 
     excluded = [c.lower() for c in settings.excluded_companies_list if c.strip()]
+
+    # Career-site copies carry a direct ATS link; aggregator copies of the same
+    # role do not. Seeing the appliable one first means it claims the dedupe
+    # slot and the manual-only twin is dropped.
+    jobs = sorted(jobs, key=_appliable_rank)
 
     for job_data in jobs:
         url = job_data.get("url", "")
@@ -71,7 +110,7 @@ def upsert_jobs(jobs: list, db: Session) -> int:
         job_data["score"] = score
         job_data["fit_reason"] = fit_reason
 
-        tc_key = (title.lower().strip(), company.lower().strip())
+        tc_key = (normalize_title(title), company.lower().strip())
         if tc_key in seen_title_company:
             continue
 
@@ -82,10 +121,34 @@ def upsert_jobs(jobs: list, db: Session) -> int:
         if existing_url:
             continue
 
-        existing_tc = db.query(Job).filter(
-            Job.title.ilike(title), Job.company.ilike(company)
-        ).first()
+        existing_tc = None
+        for candidate in db.query(Job).filter(Job.company.ilike(company)).all():
+            if normalize_title(candidate.title) == tc_key[0]:
+                existing_tc = candidate
+                break
         if existing_tc:
+            new_apply = job_data.get("apply_url") or ""
+            new_ats = job_data.get("ats_type") or detect_ats(new_apply or url)
+            already_appliable = is_auto_appliable(
+                apply_method(
+                    url=existing_tc.url,
+                    apply_url=existing_tc.apply_url or "",
+                    ats_type=existing_tc.ats_type or "",
+                    easy_apply=bool(existing_tc.easy_apply),
+                    platform=existing_tc.platform or "",
+                )
+            )
+            if not already_appliable and _appliable_rank(job_data) == 0:
+                logger.info(
+                    f"Upgrading duplicate to an appliable source: {company} - {title}"
+                )
+                existing_tc.url = url
+                existing_tc.apply_url = new_apply
+                existing_tc.ats_type = new_ats
+                existing_tc.platform = job_data.get("platform", existing_tc.platform)
+                if job_data.get("jd_text"):
+                    existing_tc.jd_text = job_data["jd_text"]
+                db.commit()
             continue
 
         missing_skills = json.dumps(job_data.get("missing_skills", []))
@@ -106,7 +169,12 @@ def upsert_jobs(jobs: list, db: Session) -> int:
             easy_apply=job_data.get("easy_apply", False),
             recruiter_name=job_data.get("recruiter_name", ""),
             recruiter_profile=job_data.get("recruiter_profile", ""),
-            ats_type=job_data.get("ats_type") or detect_ats(url),
+            apply_url=job_data.get("apply_url", ""),
+            ats_type=(
+                job_data.get("ats_type")
+                or detect_ats(job_data.get("apply_url", ""))
+                or detect_ats(url)
+            ),
             status="discovered",
         )
         db.add(job)
@@ -163,6 +231,24 @@ async def run_scan_pipeline(
     logger.info(f"Targeting roles (discovery): {roles}")
     clear_stop()
 
+    tracker = RunTracker(
+        "scan",
+        concurrency=len(platforms),
+        meta={
+            "phase": "scraping",
+            "platforms": {p: {"status": "pending", "found": 0, "added": 0} for p in platforms},
+            "roles": len(roles),
+            "new_in_db": 0,
+        },
+    )
+
+    def mark(platform: str, **fields) -> None:
+        table = dict(tracker.state.meta.get("platforms") or {})
+        row = dict(table.get(platform) or {})
+        row.update(fields)
+        table[platform] = row
+        tracker.set_meta(platforms=table)
+
     all_raw_jobs = []
     tasks = []
 
@@ -177,12 +263,15 @@ async def run_scan_pipeline(
         async def run_one(fn=scrape_fn, name=key, display=label):
             if should_stop():
                 logger.info(f"Scan stop requested — skipping {display}")
+                mark(name, status="skipped")
                 return name, []
             logger.info(f"Scraping {display}...")
+            mark(name, status="running")
             try:
                 jobs = await fn(roles=roles, max_jobs=max_jobs_per_platform, headless=headless)
             except Exception as exc:
                 logger.error(f"{name} scraping error: {exc}")
+                mark(name, status="error", error=str(exc)[:200])
                 return name, []
             return name, jobs or []
 
@@ -206,10 +295,13 @@ async def run_scan_pipeline(
                     continue
                 if not result:
                     logger.info(f"{name}: 0 jobs")
+                    mark(name, status="done", found=0, added=0)
                     continue
                 all_raw_jobs.extend(result)
                 added = upsert_jobs(result, db)
                 new_count += added
+                mark(name, status="done", found=len(result), added=added)
+                tracker.set_meta(new_in_db=new_count)
                 logger.info(f"{name}: {len(result)} jobs ({added} new in db)")
 
         logger.info(f"Total raw jobs found: {len(all_raw_jobs)}")
@@ -217,10 +309,14 @@ async def run_scan_pipeline(
         stale_removed = purge_stale_discovered_jobs(db, max_age_hours=JOB_FRESHNESS_HOURS)
         if stale_removed:
             logger.info(f"Purged {stale_removed} stale discovered jobs (>{JOB_FRESHNESS_HOURS}h)")
+    except Exception as exc:
+        logger.exception("Scan pipeline crashed")
+        tracker.finish("error", message=str(exc), error="scan_crashed")
+        raise
     finally:
         db.close()
 
-    return {
+    result = {
         "total_scraped": len(all_raw_jobs),
         "qualified": len(all_raw_jobs),
         "new_in_db": new_count,
@@ -228,3 +324,15 @@ async def run_scan_pipeline(
         "stale_removed": stale_removed,
         "platforms": platforms,
     }
+    stopped = should_stop()
+    tracker.set_meta(phase="done", **result)
+    tracker.finish(
+        "stopped" if stopped else "done",
+        message=(
+            "Stopped by user"
+            if stopped
+            else f"{new_count} new job{'' if new_count == 1 else 's'} "
+            f"from {len(all_raw_jobs)} scraped"
+        ),
+    )
+    return result

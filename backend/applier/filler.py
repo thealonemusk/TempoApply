@@ -17,6 +17,11 @@ from backend.applier.fields import (
 from backend.applier.profile import ApplicantProfile
 
 
+def noop_report(kind: str, detail: str = "", ok: Optional[bool] = None) -> None:
+    """Default step reporter — used when no run tracker is attached."""
+    return None
+
+
 def apply_result(status: str, message: str, extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     out = {"status": status, "message": message}
     if extra:

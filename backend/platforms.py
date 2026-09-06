@@ -9,7 +9,10 @@ SCAN_PLATFORMS = [
 
 DEFAULT_SCAN_PLATFORMS = SCAN_PLATFORMS
 
-# Scrapers kept in codebase but not run unless explicitly requested
-OPTIONAL_PLATFORMS = ["indeed", "naukri", "instahyre", "wellfound"]
+# Scrapers kept in the codebase but not run unless explicitly requested.
+OPTIONAL_PLATFORMS = ["indeed", "instahyre", "wellfound"]
 
-ALL_PLATFORMS = SCAN_PLATFORMS + OPTIONAL_PLATFORMS + ["manual"]
+# Deduplicated, order-preserving union of everything a Job.platform may hold.
+ALL_PLATFORMS = list(
+    dict.fromkeys(SCAN_PLATFORMS + OPTIONAL_PLATFORMS + ["manual"])
+)

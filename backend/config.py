@@ -80,3 +80,17 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+def refresh_settings() -> Settings:
+    """
+    Re-read config/.env into the existing `settings` object.
+
+    Modules import the singleton by value (`from backend.config import settings`),
+    so rebinding a new instance would leave them on stale data. Copying the
+    fields in place makes a save take effect without a server restart.
+    """
+    fresh = Settings()
+    for name in fresh.model_fields:
+        object.__setattr__(settings, name, getattr(fresh, name))
+    return settings

@@ -13,6 +13,7 @@ import requests
 from bs4 import BeautifulSoup
 from loguru import logger
 
+from backend.applier.ats import detect_ats, first_ats_url
 from backend.scrapers.base import normalize_job
 from backend.scrapers.filter_utils import passes_hard_filters
 from backend.scrapers.registry import resolve_discovery_roles
@@ -115,22 +116,53 @@ def _jd_from_html(html) -> str:
     return jd_el.get_text(separator="\n").strip() if jd_el else ""
 
 
+def _apply_url_from_html(html: bytes | str, jd_text: str = "") -> str:
+    """
+    Pull the company/ATS application URL straight out of the posting HTML.
+
+    LinkedIn embeds the offsite apply target in hrefs and in the
+    externalApply/applyUrl query strings, so we can resolve it here — during
+    the scan, for free — instead of clicking through LinkedIn at apply time.
+    """
+    text = html.decode("utf-8", "ignore") if isinstance(html, bytes) else (html or "")
+    found = first_ats_url(text, jd_text)
+    if found:
+        return found
+    try:
+        soup = BeautifulSoup(text, "html.parser")
+    except Exception:
+        return ""
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        if "externalApply" in href or "applyUrl" in href:
+            nested = first_ats_url(urllib.parse.unquote(href))
+            if nested:
+                return nested
+    return ""
+
+
 def _scrape_job_detail_bs4(url: str) -> dict:
-    empty = {"jd_text": "", "easy_apply": False, "recruiter_profile": ""}
+    empty = {"jd_text": "", "easy_apply": False, "recruiter_profile": "", "apply_url": "", "ats_type": ""}
     job_id = _linkedin_job_id(url)
     pages = []
     if job_id:
         pages.append(f"https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{job_id}")
     pages.append(url)
+    best = dict(empty)
     for page_url in pages:
         try:
             resp = requests.get(page_url, headers=HEADERS, timeout=15)
             jd_text = _jd_from_html(resp.content)
+            apply_url = _apply_url_from_html(resp.content, jd_text)
+            if apply_url and not best["apply_url"]:
+                best["apply_url"] = apply_url
+                best["ats_type"] = detect_ats(apply_url)
             if len(jd_text) >= 80:
-                return {"jd_text": jd_text, "easy_apply": False, "recruiter_profile": ""}
+                best["jd_text"] = jd_text
+                return best
         except Exception as exc:
             logger.debug(f"Could not scrape job detail {page_url}: {exc}")
-    return empty
+    return best
 
 
 def _collect_listings(

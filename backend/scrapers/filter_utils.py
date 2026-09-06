@@ -175,7 +175,8 @@ def is_job_experience_valid(
     max_years: float = MAX_JD_EXPERIENCE_YEARS,
     require_jd: bool = True,
 ) -> Tuple[bool, str]:
-    cap = MAX_JD_EXPERIENCE_YEARS
+    # Honour the caller's cap; MAX_JD_EXPERIENCE_YEARS is only the default.
+    cap = float(max_years) if max_years else MAX_JD_EXPERIENCE_YEARS
     title = job_data.get("title", "").strip()
     title_lower = title.lower()
     jd_text = job_data.get("jd_text", "").strip()
@@ -197,7 +198,7 @@ def is_job_experience_valid(
     ranges.extend(_jd_experience_ranges(jd_text))
 
     for min_y, max_y in ranges:
-        if _experience_exceeds_cap(min_y, max_y, cap):
+        if _experience_exceeds_cap(min_y, max_y, cap=cap):
             return False, (
                 f"Requires more than {cap:g} years of experience "
                 f"(parsed {min_y:g}-{max_y:g})"

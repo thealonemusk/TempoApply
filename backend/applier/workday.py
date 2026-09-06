@@ -20,6 +20,7 @@ from backend.applier.filler import (
     dismiss_overlays,
     fill_form,
     finish_application,
+    noop_report,
     screenshot_failure,
     unfilled_required,
     upload_resume,
@@ -734,6 +735,7 @@ async def apply_workday(
     company: str,
     auto_submit: bool,
     job_id: str,
+    report=noop_report,
 ) -> Dict[str, Any]:
     job_url = page.url
     await _wait_ready(page, 800, shell=True)
@@ -751,11 +753,14 @@ async def apply_workday(
         except Exception:
             pass
 
+    report("signin", "signed in" if signed_in else "not signed in", signed_in)
+
     await _click_apply(page)
     await _wait_ready(page, 1500, shell=True)
 
     if await _login_form_visible(page):
         signed_in = await ensure_signed_in(page)
+        report("signin", "retry after apply click", signed_in)
         if not signed_in:
             await screenshot_failure(page, LOG_DIR / f"{job_id}.png")
             return _result("needs_review", "Workday sign-in failed. Apply this one manually.")
@@ -784,11 +789,19 @@ async def apply_workday(
             return _result("applied", "Application submitted", info)
         if await upload_resume(page, resume, page=page):
             info["resume_uploaded"] = True
+            report("upload", "resume attached", True)
+        before_fill = info["filled"]
         info["filled"] += await _fill_known(page, profile)
         info["filled"] += await _fill_form_blocks(page, profile, job_title, company)
         generic = await fill_form(page, profile, job_title, company)
         info["filled"] += generic.get("filled", 0)
         info["unknown_required"] = generic.get("unknown_required") or []
+        step_label = await _step_name(page) or f"step {step + 1}"
+        report(
+            "fill",
+            f"{step_label}: {info['filled'] - before_fill} fields",
+            info["filled"] > before_fill,
+        )
 
         leftover = await _workday_errors(page)
         info["unknown_required"] = leftover
@@ -800,10 +813,12 @@ async def apply_workday(
         await _wait_ready(page, 1100)
         if not moved:
             if await captcha_present(page):
+                report("error", "CAPTCHA blocked the wizard", False)
                 await screenshot_failure(page, LOG_DIR / f"{job_id}.png")
                 return _result("needs_review", "CAPTCHA present — complete this one in the browser", info)
             return await finish_application(page, page, profile, auto_submit, job_id, info, LOG_DIR)
         after = await _step_name(page)
+        report("next", after or f"step {step + 2}", True)
         if before and after and before == after:
             return await finish_application(page, page, profile, auto_submit, job_id, info, LOG_DIR)
         logger.info(f"Workday next page ({step + 1}) for {job_title}")

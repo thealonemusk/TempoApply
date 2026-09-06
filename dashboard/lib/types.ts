@@ -8,6 +8,25 @@ export type JobStatus =
   | 'offer'
   | 'ignored';
 
+/** How a posting can be applied to. Mirrors backend/applier/ats.py. */
+export type ApplyMethod =
+  | 'greenhouse'
+  | 'lever'
+  | 'workday'
+  | 'ashby'
+  | 'linkedin_easy'
+  | 'manual';
+
+/** Durable per-job apply outcome stored on the Job row. */
+export type ApplyStatusValue =
+  | ''
+  | 'queued'
+  | 'running'
+  | 'applied'
+  | 'needs_review'
+  | 'failed'
+  | 'skipped';
+
 export interface Job {
   id: string;
   title: string;
@@ -29,15 +48,20 @@ export interface Job {
   discovered_at: string | null;
   visited_at: string | null;
   applied_at: string | null;
-  ats_type?: string;
-  apply_status?: string;
-  apply_error?: string;
+  ats_type: string;
+  apply_url: string;
+  apply_status: ApplyStatusValue;
+  apply_error: string;
+  apply_method: ApplyMethod;
+  auto_appliable: boolean;
 }
 
 export interface Analytics {
   total_jobs: number;
   by_status: Record<string, number>;
   by_platform: Record<string, number>;
+  by_apply_status: Record<string, number>;
+  by_ats: Record<string, number>;
   top_companies: { company: string; score: number }[];
 }
 
@@ -47,19 +71,25 @@ export interface SettingsData {
   preferred_locations: string[];
   min_relevance_score: number;
   user_full_name: string;
+  excluded_companies: string[];
   has_gemini_key: boolean;
   has_linkedin: boolean;
   has_naukri: boolean;
   has_indeed: boolean;
   has_instahyre: boolean;
+  has_workday: boolean;
   supported_platforms: string[];
-  excluded_companies: string[];
+  default_concurrency: number;
+  max_concurrency: number;
+  job_freshness_hours: number;
 }
 
-export interface ApplyStatus {
-  running: boolean;
-  last_result: Record<string, unknown> | null;
-  current_job: string | null;
+export interface Education {
+  school: string;
+  degree: string;
+  major: string;
+  start_year: string;
+  end_year: string;
 }
 
 export interface ApplicantProfile {
@@ -89,13 +119,18 @@ export interface ApplicantProfile {
   skills: string;
   cover_letter_template: string;
   auto_submit: boolean;
-  education: { school: string; degree: string; major: string; start_year: string; end_year: string }[];
+  education: Education[];
   missing: string[];
   has_resume: boolean;
   ready_to_apply: boolean;
 }
 
-export interface ScanStatus {
-  running: boolean;
-  last_result: Record<string, unknown> | null;
+/** Options for starting an apply run. */
+export interface ApplyOptions {
+  job_ids?: string[] | null;
+  auto_submit?: boolean;
+  headless?: boolean;
+  concurrency?: number;
+  job_timeout_sec?: number;
+  skip_unsupported?: boolean;
 }

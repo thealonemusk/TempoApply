@@ -8,7 +8,7 @@ from urllib.parse import urljoin, urlparse
 from loguru import logger
 from playwright.async_api import Page
 
-from backend.applier.ats import detect_ats, first_ats_url
+from backend.applier.ats import apply_url_for_ats, detect_ats, first_ats_url
 from backend.applier.filler import (
     application_frame,
     application_succeeded,
@@ -21,6 +21,7 @@ from backend.applier.filler import (
     dismiss_overlays,
     fill_form,
     finish_application,
+    noop_report,
     screenshot_failure,
     unfilled_required,
     upload_resume,
@@ -67,13 +68,16 @@ async def apply_greenhouse(
     company: str,
     auto_submit: bool,
     job_id: str,
+    report=noop_report,
 ) -> Dict[str, Any]:
     await dismiss_overlays(page)
     await click_apply(page)
     await wait_settled(page)
     scope = await application_frame(page)
     uploaded = await upload_resume(scope, resume, page=page)
+    report("upload", "resume attached" if uploaded else "no resume input found", uploaded)
     info = await fill_form(scope, profile, job_title, company)
+    report("fill", f"{info.get('filled', 0)} fields", bool(info.get("filled")))
     info["resume_uploaded"] = uploaded
     for label, value in (
         ("First Name", profile.first_name),
@@ -150,6 +154,7 @@ async def apply_lever(
     company: str,
     auto_submit: bool,
     job_id: str,
+    report=noop_report,
 ) -> Dict[str, Any]:
     url = page.url
     apply = apply_url_for_ats(url, "lever")
@@ -157,7 +162,9 @@ async def apply_lever(
         await _goto(page, apply)
     await dismiss_overlays(page)
     uploaded = await upload_resume(page, resume, page=page)
+    report("upload", "resume attached" if uploaded else "no resume input found", uploaded)
     info = await fill_form(page, profile, job_title, company)
+    report("fill", f"{info.get('filled', 0)} fields", bool(info.get("filled")))
     info["resume_uploaded"] = uploaded
     named = {
         'input[name="name"]': profile.full_name,
@@ -277,6 +284,7 @@ async def apply_custom(
     company: str,
     auto_submit: bool,
     job_id: str,
+    report=noop_report,
 ) -> Dict[str, Any]:
     await dismiss_overlays(page)
     existing = list(page.context.pages)
@@ -290,14 +298,22 @@ async def apply_custom(
         page = await offsite_page(page)
     ats = detect_ats(page.url)
     if ats == "workday":
-        return await apply_workday(page, profile, resume, job_title, company, auto_submit, job_id)
+        return await apply_workday(
+            page, profile, resume, job_title, company, auto_submit, job_id, report=report
+        )
     if ats == "greenhouse":
-        return await apply_greenhouse(page, profile, resume, job_title, company, auto_submit, job_id)
+        return await apply_greenhouse(
+            page, profile, resume, job_title, company, auto_submit, job_id, report=report
+        )
     if ats == "lever":
-        return await apply_lever(page, profile, resume, job_title, company, auto_submit, job_id)
+        return await apply_lever(
+            page, profile, resume, job_title, company, auto_submit, job_id, report=report
+        )
     scope = await application_frame(page)
     uploaded = await upload_resume(scope, resume, page=page)
+    report("upload", "resume attached" if uploaded else "no resume input found", uploaded)
     info = await fill_form(scope, profile, job_title, company)
+    report("fill", f"{info.get('filled', 0)} fields", bool(info.get("filled")))
     info["resume_uploaded"] = uploaded
     # Multi-step generic wizards
     for _ in range(6):
@@ -312,6 +328,7 @@ async def apply_custom(
         moved = await click_next(scope)
         if not moved:
             break
+        report("next", "advanced a wizard step", True)
         await wait_settled(page)
         extra = await fill_form(scope, profile, job_title, company)
         info["filled"] += extra.get("filled", 0)
@@ -330,23 +347,29 @@ async def apply_on_page(
     auto_submit: bool,
     job_id: str,
     jd_text: str = "",
+    report=noop_report,
 ) -> Dict[str, Any]:
     await _goto(page, url)
+    report("navigate", url)
+
     page = await open_from_linkedin(page, jd_text)
     page = await offsite_page(page)
     page, ats = await follow_external_apply(page)
     page = await offsite_page(page)
     logger.info(f"Applying via ATS={ats} url={page.url}")
+    report("detect", f"{ats} · {page.url}", ats != "unknown")
 
     if ats == "unknown" and "linkedin.com" in (page.url or "").lower():
         from backend.applier.linkedin_apply import _is_easy_apply
 
         if await _is_easy_apply(page):
+            report("detect", "LinkedIn Easy Apply", True)
             result = await apply_linkedin_easy(
-                page, profile, resume, job_title, company, auto_submit, job_id
+                page, profile, resume, job_title, company, auto_submit, job_id, report=report
             )
             result["final_url"] = page.url
             return result
+        report("error", "Never left LinkedIn — no company apply link found", False)
         await screenshot_failure(page, LOG_DIR / f"{job_id}.png")
         return _result(
             "needs_review",
@@ -363,7 +386,14 @@ async def apply_on_page(
         "unknown": apply_custom,
     }
     handler = handlers.get(ats, apply_custom)
-    result = await handler(page, profile, resume, job_title, company, auto_submit, job_id)
+    result = await handler(
+        page, profile, resume, job_title, company, auto_submit, job_id, report=report
+    )
     result["ats"] = ats
     result["final_url"] = page.url
+    report(
+        "confirm" if result.get("status") == "applied" else "info",
+        result.get("message") or "",
+        result.get("status") == "applied",
+    )
     return result

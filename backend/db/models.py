@@ -41,6 +41,9 @@ class Job(Base):
     recruiter_name = Column(String, default="")
     recruiter_profile = Column(String, default="")
     ats_type = Column(String, default="")  # greenhouse, lever, workday, custom, unknown
+    # Company/ATS apply URL resolved at scan time, so apply does not have to
+    # re-derive it by clicking through LinkedIn.
+    apply_url = Column(String, default="")
     apply_status = Column(String, default="")  # queued, applying, applied, failed, needs_review, skipped
     apply_error = Column(Text, default="")
     # Timestamps
@@ -105,6 +108,7 @@ def _migrate_db():
             "ats_type": "VARCHAR DEFAULT ''",
             "apply_status": "VARCHAR DEFAULT ''",
             "apply_error": "TEXT DEFAULT ''",
+            "apply_url": "VARCHAR DEFAULT ''",
         }
         for name, ddl in extras.items():
             if name not in col_names:
