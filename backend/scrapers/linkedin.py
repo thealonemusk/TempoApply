@@ -7,12 +7,12 @@ import re
 import urllib.parse
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
-from typing import List, Set
+from typing import List, Optional, Set
 
-import requests
 from bs4 import BeautifulSoup
 from loguru import logger
 
+from backend.scrapers import http
 from backend.scrapers.base import normalize_job
 from backend.scrapers.filter_utils import passes_hard_filters
 from backend.scrapers.registry import resolve_discovery_roles
@@ -90,7 +90,16 @@ def _parse_search_cards(html: str) -> List[dict]:
     return results
 
 
-def _fetch_search_page(keywords: str, location: str, start: int, time_filter: str) -> List[dict]:
+def _fetch_search_page(
+    keywords: str, location: str, start: int, time_filter: str
+) -> Optional[List[dict]]:
+    """Fetch one page of search results.
+
+    Returns [] for a genuinely empty page and None when the request failed, so
+    the caller can tell "no more jobs" from "LinkedIn refused to answer". The
+    two used to be indistinguishable: a 429 body parses to zero cards, and the
+    pagination loop read that as the end of the results and stopped early.
+    """
     params = urllib.parse.urlencode({
         "keywords": keywords,
         "location": location,
@@ -98,7 +107,15 @@ def _fetch_search_page(keywords: str, location: str, start: int, time_filter: st
         "start": start,
     })
     url = f"https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search?{params}"
-    resp = requests.get(url, headers=HEADERS, timeout=15)
+    resp = http.get(url, headers=HEADERS)
+    if resp.status_code == 404:
+        return []
+    if resp.status_code != 200:
+        logger.warning(
+            f"LinkedIn search HTTP {resp.status_code} for '{keywords}' / "
+            f"'{location}' @ {start} - results may be incomplete"
+        )
+        return None
     return _parse_search_cards(resp.text)
 
 
@@ -124,7 +141,9 @@ def _scrape_job_detail_bs4(url: str) -> dict:
     pages.append(url)
     for page_url in pages:
         try:
-            resp = requests.get(page_url, headers=HEADERS, timeout=15)
+            resp = http.get(page_url, headers=HEADERS)
+            if resp.status_code != 200:
+                continue
             jd_text = _jd_from_html(resp.content)
             if len(jd_text) >= 80:
                 return {"jd_text": jd_text, "easy_apply": False, "recruiter_profile": ""}
@@ -140,6 +159,7 @@ def _collect_listings(
 ) -> List[dict]:
     seen_urls: Set[str] = set()
     listings: List[dict] = []
+    failed_pages = 0
 
     for time_filter in [LINKEDIN_TIME_FILTER]:
         for role in roles:
@@ -152,9 +172,16 @@ def _collect_listings(
                         try:
                             batch = _fetch_search_page(query, location, start, time_filter)
                         except Exception as exc:
-                            logger.debug(
+                            logger.warning(
                                 f"LinkedIn page failed for '{query}' / '{location}' @ {start}: {exc}"
                             )
+                            batch = None
+
+                        if batch is None:
+                            # Request failed after retries. Stop paginating this
+                            # query, but count it so the scan reports the gap
+                            # instead of looking like a clean empty result.
+                            failed_pages += 1
                             break
 
                         if not batch:
@@ -188,6 +215,11 @@ def _collect_listings(
         if len(listings) >= max_jobs // 2:
             break
 
+    if failed_pages:
+        logger.warning(
+            f"LinkedIn: {failed_pages} search pages failed after retries - "
+            "this scan is missing results"
+        )
     return listings
 
 

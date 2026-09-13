@@ -17,6 +17,7 @@ from backend.applier.filler import screenshot_failure
 from backend.applier.linkedin_apply import ensure_linkedin_session
 from backend.applier.profile import ApplicantProfile, ensure_resume_pdf, load_profile
 from backend.db.models import Application, Job, SessionLocal
+from backend import seen_ledger
 from backend.scrapers.base import create_browser_context
 
 SKIP_STATUSES = {"applied", "interviewing", "rejected", "offer", "ignored"}
@@ -97,6 +98,15 @@ def _record_result(db, job: Job, result: Dict) -> None:
     if status == "applied":
         job.status = "applied"
         job.applied_at = datetime.utcnow()
+        seen_ledger.mark(
+            db,
+            url=job.url,
+            status="applied",
+            reason=message[:200],
+            title=job.title or "",
+            company=job.company or "",
+            platform=job.platform or "",
+        )
         if not job.application:
             db.add(Application(job_id=job.id, notes=message))
         else:

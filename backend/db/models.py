@@ -79,6 +79,29 @@ class BaseResume(Base):
     uploaded_at = Column(DateTime, default=func.now())
 
 
+class SeenJob(Base):
+    """Permanent record of every job URL the scanner has ever surfaced.
+
+    Separate from `jobs` on purpose: `jobs` is a working queue that the scan
+    purges, this is the memory that survives the purge. See
+    backend/seen_ledger.py for the status semantics.
+    """
+
+    __tablename__ = "seen_jobs"
+
+    url_key = Column(String, primary_key=True)  # md5 of the normalized URL
+    url = Column(String, nullable=False)
+    tc_key = Column(String, default="", index=True)  # md5 of title|company
+    title = Column(String, default="")
+    company = Column(String, default="")
+    platform = Column(String, default="")
+    status = Column(String, default="seen", index=True)
+    reason = Column(Text, default="")
+    first_seen = Column(DateTime, default=func.now())
+    last_seen = Column(DateTime, default=func.now(), onupdate=func.now())
+    times_seen = Column(Integer, default=1)
+
+
 def get_db():
     db = SessionLocal()
     try:
@@ -90,7 +113,21 @@ def get_db():
 def init_db():
     Base.metadata.create_all(bind=engine)
     _migrate_db()
+    _seed_seen_ledger()
     print("Database initialized (SQLite)")
+
+
+def _seed_seen_ledger():
+    """Backfill the ledger once, so jobs handled before it existed stay handled."""
+    from backend.seen_ledger import backfill_from_jobs
+
+    db = SessionLocal()
+    try:
+        backfill_from_jobs(db)
+    except Exception as exc:  # a failed backfill must not block startup
+        print(f"Seen ledger backfill skipped: {exc}")
+    finally:
+        db.close()
 
 
 def _migrate_db():

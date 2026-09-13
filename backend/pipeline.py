@@ -20,13 +20,20 @@ from backend.config import settings
 from backend.platforms import DEFAULT_SCAN_PLATFORMS
 from backend.job_freshness import JOB_FRESHNESS_HOURS
 from backend.scan_control import clear_stop, should_stop
+from backend import seen_ledger
 
 
 def upsert_jobs(jobs: list, db: Session) -> int:
-    """Insert new jobs (skip duplicates by URL or Company+Title). Returns count of new jobs."""
+    """Insert new jobs, skipping anything the seen ledger says we already handled.
+
+    Returns the count of new jobs. Every rejected job is recorded in the ledger
+    with its reason, so a scan that drops 300 postings can still say why.
+    """
     count = 0
-    seen_urls = set()
-    seen_title_company = set()
+    # One query for the whole batch instead of a SELECT per candidate.
+    blocked_urls, blocked_tcs = seen_ledger.load_blocklist(db)
+    batch_urls = set()
+    batch_tcs = set()
 
     max_exp_years = getattr(settings, "experience_years", 2)
     min_score = getattr(settings, "min_relevance_score", 55)
@@ -38,24 +45,39 @@ def upsert_jobs(jobs: list, db: Session) -> int:
         title = job_data.get("title", "")
         company = job_data.get("company", "")
 
+        if not url:
+            continue
+
+        ukey = seen_ledger.url_key(url)
+        tkey = seen_ledger.tc_key(title, company)
+
+        if ukey in batch_urls or (tkey and tkey in batch_tcs):
+            continue
+
+        # The ledger remembers decisions the user already made, even for jobs
+        # whose queue row was purged. Without this the next scan re-adds them.
+        if ukey in blocked_urls or (tkey and tkey in blocked_tcs):
+            logger.debug(f"Seen ledger blocked [{company} - {title}]")
+            continue
+
         if excluded and company:
             company_lower = company.lower()
             if any(exc in company_lower for exc in excluded):
                 logger.info(f"Skipping excluded company: {company}")
+                seen_ledger.record(db, job_data, "filtered", f"Excluded company: {company}")
                 continue
-
-        if not url or url in seen_urls:
-            continue
 
         ok, reason = passes_hard_filters(job_data, max_years=max_exp_years)
         if not ok:
             logger.info(f"Hard filter excluded [{company} - {title}]: {reason}")
+            seen_ledger.record(db, job_data, "filtered", reason)
             continue
 
         if job_data.get("platform") == "company_careers":
             eligible, reason = is_career_listing_eligible(job_data)
             if not eligible:
                 logger.info(f"Career listing excluded [{company} - {title}]: {reason}")
+                seen_ledger.record(db, job_data, "filtered", reason)
                 continue
 
         score, fit_reason = score_job(
@@ -66,17 +88,19 @@ def upsert_jobs(jobs: list, db: Session) -> int:
         )
         if score < min_score:
             logger.info(f"Below min score ({score} < {min_score}): [{company} - {title}]")
+            seen_ledger.record(
+                db, job_data, "filtered", f"Below min score: {score} < {min_score}"
+            )
             continue
 
         job_data["score"] = score
         job_data["fit_reason"] = fit_reason
 
-        tc_key = (title.lower().strip(), company.lower().strip())
-        if tc_key in seen_title_company:
-            continue
-
-        seen_urls.add(url)
-        seen_title_company.add(tc_key)
+        # Added only once a job passes, so a richer duplicate later in the
+        # batch can still win over a thin one seen first.
+        batch_urls.add(ukey)
+        if tkey:
+            batch_tcs.add(tkey)
 
         existing_url = db.query(Job).filter(Job.url == url).first()
         if existing_url:
@@ -110,6 +134,7 @@ def upsert_jobs(jobs: list, db: Session) -> int:
             status="discovered",
         )
         db.add(job)
+        seen_ledger.record(db, job_data, "discovered", fit_reason)
         count += 1
     db.commit()
     return count
@@ -121,6 +146,9 @@ def purge_visited_jobs(db: Session) -> int:
         Job.visited_at.isnot(None),
         Job.status.in_(["discovered", "scored", "tailored", "ignored"]),
     ).all()
+    # Mark before deleting: after db.delete the row's URL is no longer readable,
+    # and an unrecorded purge is exactly how these jobs came back.
+    seen_ledger.mark_jobs(db, visited, "visited", "opened by user")
     removed = 0
     for job in visited:
         if job.application:
@@ -139,6 +167,9 @@ def purge_stale_discovered_jobs(db: Session, max_age_hours: int = JOB_FRESHNESS_
         Job.status.in_(["discovered", "scored"]),
         Job.discovered_at < cutoff,
     ).all()
+    seen_ledger.mark_jobs(
+        db, stale, "expired", f"aged out of the queue after {max_age_hours}h"
+    )
     removed = 0
     for job in stale:
         if job.application:

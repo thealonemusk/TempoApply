@@ -19,6 +19,7 @@ from loguru import logger
 
 from backend.job_freshness import JOB_FRESHNESS_HOURS
 from backend.db.models import Job, get_db, init_db
+from backend import seen_ledger
 from backend.config import settings
 from backend.platforms import DEFAULT_SCAN_PLATFORMS, SCAN_PLATFORMS, ALL_PLATFORMS
 from backend.applier.ats import detect_ats
@@ -220,10 +221,15 @@ def mark_job_visited(job_id: str, db: Session = Depends(get_db)):
     return {"success": True, "visited_at": job.visited_at}
 
 
+class UnblockRequest(BaseModel):
+    url: str
+
+
 @app.delete("/api/jobs/clear")
 def clear_discovered_jobs(db: Session = Depends(get_db)):
     """Delete all jobs that are still in 'discovered' or 'scored' status to declutter the dashboard."""
     jobs_to_delete = db.query(Job).filter(Job.status.in_(["discovered", "scored"])).all()
+    seen_ledger.mark_jobs(db, jobs_to_delete, "dismissed", "cleared from the dashboard")
     deleted_count = 0
     for job in jobs_to_delete:
         if job.application:
@@ -268,6 +274,15 @@ def purge_experienced_jobs(db: Session = Depends(get_db)):
         if is_valid and job.platform == "company_careers":
             is_valid, _ = is_career_listing_eligible(job_dict)
         if not is_valid:
+            seen_ledger.mark(
+                db,
+                url=job.url,
+                status="filtered",
+                reason="failed hard filters on purge",
+                title=job.title or "",
+                company=job.company or "",
+                platform=job.platform or "",
+            )
             if job.application:
                 db.delete(job.application)
             db.delete(job)
@@ -281,11 +296,37 @@ def delete_job(job_id: str, db: Session = Depends(get_db)):
     job = db.query(Job).filter(Job.id == job_id).first()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
+    seen_ledger.mark(
+        db,
+        url=job.url,
+        status="dismissed",
+        reason="deleted by user",
+        title=job.title or "",
+        company=job.company or "",
+        platform=job.platform or "",
+    )
     if job.application:
         db.delete(job.application)
     db.delete(job)
     db.commit()
     return {"success": True}
+
+
+# --- Seen ledger -------------------------------------------------------------
+
+
+@app.get("/api/seen/stats")
+def seen_stats(db: Session = Depends(get_db)):
+    """Counts by ledger status - how many jobs future scans will skip, and why."""
+    return seen_ledger.stats(db)
+
+
+@app.post("/api/seen/unblock")
+def seen_unblock(payload: UnblockRequest, db: Session = Depends(get_db)):
+    """Let a job be rediscovered after it was visited, dismissed, or expired."""
+    if not seen_ledger.unblock(db, payload.url):
+        raise HTTPException(status_code=404, detail="URL not in the seen ledger")
+    return {"success": True, "url": payload.url}
 
 
 # ─── Scan Pipeline ───────────────────────────────────────────────────────────

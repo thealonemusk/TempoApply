@@ -12,6 +12,8 @@ from datetime import datetime, timezone, timedelta
 from typing import List, Optional
 from loguru import logger
 import requests
+
+from backend.scrapers import http
 from bs4 import BeautifulSoup
 
 from backend.scrapers.filter_utils import (
@@ -169,7 +171,7 @@ def _scrape_greenhouse(company: dict, roles: List[str]) -> List[dict]:
 
     url = f"https://boards-api.greenhouse.io/v1/boards/{api_id}/jobs?content=true"
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=15)
+        resp = http.get(url, headers=HEADERS, timeout=15)
         if resp.status_code != 200:
             logger.warning(f"Greenhouse {name}: HTTP {resp.status_code} (bad api_id={api_id}?)")
             return []
@@ -236,7 +238,7 @@ def _scrape_lever(company: dict, roles: List[str]) -> List[dict]:
 
     url = f"https://api.lever.co/v0/postings/{api_id}?mode=json"
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=15)
+        resp = http.get(url, headers=HEADERS, timeout=15)
         if resp.status_code != 200:
             logger.warning(f"Lever {name}: HTTP {resp.status_code} (bad api_id={api_id}?)")
             return []
@@ -329,7 +331,7 @@ def _resolve_workday_host(
     for host in hosts:
         url = f"https://{host}/wday/cxs/{tenant}/{api_id}/jobs"
         try:
-            resp = requests.post(url, headers=headers, json=payload, timeout=15)
+            resp = http.post(url, headers=headers, json=payload, timeout=15)
             if resp.status_code == 200:
                 logger.debug(f"Workday host resolved: {host}")
                 return host
@@ -347,7 +349,7 @@ def _fetch_workday_job_detail(
     """Fetch full JD text from Workday CXS job detail endpoint."""
     detail_url = f"https://{working_host}/wday/cxs/{tenant}/{api_id}{external_path}"
     try:
-        resp = requests.get(detail_url, headers=HEADERS, timeout=12)
+        resp = http.get(detail_url, headers=HEADERS, timeout=12)
         if resp.status_code != 200:
             return ""
         data = resp.json()
@@ -400,7 +402,7 @@ def _scrape_workday(company: dict, roles: List[str]) -> List[dict]:
                     "offset": page * WORKDAY_PAGE_SIZE,
                     "searchText": role,
                 }
-                resp = requests.post(url, headers=headers, json=payload, timeout=15)
+                resp = http.post(url, headers=headers, json=payload, timeout=15)
                 if resp.status_code != 200:
                     if page == 0:
                         logger.warning(f"Workday {name} ({role}): HTTP {resp.status_code}")
@@ -471,7 +473,7 @@ def _scrape_custom(company: dict, roles: List[str]) -> List[dict]:
         return []
 
     try:
-        resp = requests.get(careers_url, headers=HEADERS, timeout=20)
+        resp = http.get(careers_url, headers=HEADERS, timeout=20)
         if resp.status_code != 200:
             logger.debug(f"Custom {name}: HTTP {resp.status_code}")
             return []

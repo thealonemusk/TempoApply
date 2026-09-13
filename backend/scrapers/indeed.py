@@ -6,6 +6,8 @@ import asyncio
 from typing import List, Optional
 from loguru import logger
 import requests
+
+from backend.scrapers import http
 from bs4 import BeautifulSoup
 import urllib.parse
 import json
@@ -19,7 +21,7 @@ def _scrape_job_detail_bs4(url: str) -> dict:
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         }
-        resp = requests.get(url, headers=headers, timeout=15)
+        resp = http.get(url, headers=headers, timeout=15)
         soup = BeautifulSoup(resp.content, 'html.parser')
         
         jd_el = soup.find(id='jobDescriptionText')
@@ -68,7 +70,7 @@ async def scrape_indeed_jobs(
                     f"&sort=date&fromage={INDEED_FROMAGE_DAYS}"
                 )
                 
-                resp = await asyncio.to_thread(requests.get, search_url, headers=headers, timeout=15)
+                resp = await asyncio.to_thread(http.get, search_url, headers=headers, timeout=15)
                 soup = BeautifulSoup(resp.content, 'html.parser')
                 
                 # Indeed sometimes injects jobs via window.mosaic.providerData
