@@ -31,7 +31,7 @@ def upsert_jobs(jobs: list, db: Session) -> int:
     """
     count = 0
     # One query for the whole batch instead of a SELECT per candidate.
-    blocked_urls, blocked_tcs = seen_ledger.load_blocklist(db)
+    blocked_urls, _ = seen_ledger.load_blocklist(db)
     batch_urls = set()
     batch_tcs = set()
 
@@ -56,7 +56,7 @@ def upsert_jobs(jobs: list, db: Session) -> int:
 
         # The ledger remembers decisions the user already made, even for jobs
         # whose queue row was purged. Without this the next scan re-adds them.
-        if ukey in blocked_urls or (tkey and tkey in blocked_tcs):
+        if ukey in blocked_urls:
             logger.debug(f"Seen ledger blocked [{company} - {title}]")
             continue
 

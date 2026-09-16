@@ -17,6 +17,7 @@ from backend.scrapers import http
 from bs4 import BeautifulSoup
 
 from backend.scrapers.filter_utils import (
+    ENTRY_TITLE_SIGNALS,
     EXCLUDED_TITLE_KEYWORDS,
     INTERN_PATTERN,
     is_career_listing_eligible,
@@ -30,7 +31,7 @@ HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 }
 
-from backend.job_freshness import JOB_FRESHNESS_HOURS
+from backend.job_freshness import CAREER_FRESHNESS_HOURS
 
 # Extra title aliases beyond the pipeline role strings (SDE, fullstack, etc.)
 ROLE_ALIASES = [
@@ -61,9 +62,12 @@ ROLE_ALIASES = [
 
 
 def _is_fresh(timestamp_str: Optional[str] = None, timestamp_ms: Optional[int] = None) -> bool:
-    """Check if job is fresh (posted/updated within JOB_FRESHNESS_HOURS)."""
+    """Check if job is fresh (posted/updated within CAREER_FRESHNESS_HOURS)."""
+    if not timestamp_str and not timestamp_ms:
+        return True
+
     now = datetime.now(timezone.utc)
-    cutoff = now - timedelta(hours=JOB_FRESHNESS_HOURS)
+    cutoff = now - timedelta(hours=CAREER_FRESHNESS_HOURS)
 
     if timestamp_str:
         try:
@@ -74,7 +78,7 @@ def _is_fresh(timestamp_str: Optional[str] = None, timestamp_ms: Optional[int] =
             return dt >= cutoff
         except Exception as e:
             logger.debug(f"Error parsing timestamp_str {timestamp_str}: {e}")
-            return False
+            return True
 
     if timestamp_ms:
         try:
@@ -82,15 +86,15 @@ def _is_fresh(timestamp_str: Optional[str] = None, timestamp_ms: Optional[int] =
             return dt >= cutoff
         except Exception as e:
             logger.debug(f"Error parsing timestamp_ms {timestamp_ms}: {e}")
-            return False
+            return True
 
-    return False
+    return True
 
 
 def _is_workday_posting_fresh(posted_on: str) -> bool:
     """Parse Workday human-readable postedOn strings."""
     if not posted_on:
-        return False
+        return True
 
     s = posted_on.lower().strip()
     if "today" in s:
@@ -100,16 +104,28 @@ def _is_workday_posting_fresh(posted_on: str) -> bool:
 
     days_match = re.search(r"(\d+)\s*\+?\s*days?", s)
     if days_match:
-        return int(days_match.group(1)) * 24 <= JOB_FRESHNESS_HOURS
+        return int(days_match.group(1)) * 24 <= CAREER_FRESHNESS_HOURS
 
     weeks_match = re.search(r"(\d+)\s*weeks?", s)
     if weeks_match:
-        return int(weeks_match.group(1)) * 7 * 24 <= JOB_FRESHNESS_HOURS
+        return int(weeks_match.group(1)) * 7 * 24 <= CAREER_FRESHNESS_HOURS
 
     if "30+" in s or "month" in s or "months" in s:
         return False
 
-    return False
+    return True
+
+
+def _title_has_entry_signal(title: str) -> bool:
+    t = (title or "").lower()
+    return any(sig in t for sig in ENTRY_TITLE_SIGNALS)
+
+
+def _location_is_ambiguous(location_str: str) -> bool:
+    loc = (location_str or "").strip().lower()
+    if not loc:
+        return True
+    return bool(re.search(r"\d+\s+locations?", loc) or "multiple" in loc)
 
 
 def _passes_career_filters(job_data: dict) -> bool:
@@ -262,7 +278,7 @@ def _scrape_lever(company: dict, roles: List[str]) -> List[dict]:
 
             # Lever uses epoch milliseconds in `createdAt`
             created_at_ms = job.get("createdAt")
-            if not created_at_ms or not _is_fresh(timestamp_ms=created_at_ms):
+            if created_at_ms and not _is_fresh(timestamp_ms=created_at_ms):
                 continue
 
             job_url = job.get("hostedUrl", "")
@@ -345,21 +361,33 @@ def _fetch_workday_job_detail(
     tenant: str,
     api_id: str,
     external_path: str,
-) -> str:
-    """Fetch full JD text from Workday CXS job detail endpoint."""
+) -> dict:
+    """Fetch full JD text and resolved location from Workday CXS job detail."""
+    empty = {"jd_text": "", "location": ""}
     detail_url = f"https://{working_host}/wday/cxs/{tenant}/{api_id}{external_path}"
     try:
-        resp = http.get(detail_url, headers=HEADERS, timeout=12)
+        resp = http.get(detail_url, headers=HEADERS, timeout=12, fresh=True)
         if resp.status_code != 200:
-            return ""
+            return empty
         data = resp.json()
-        desc_html = data.get("jobPostingInfo", {}).get("jobDescription", "") or ""
-        if not desc_html:
-            return ""
-        return BeautifulSoup(desc_html, "html.parser").get_text(separator="\n").strip()
+        info = data.get("jobPostingInfo") or {}
+        desc_html = info.get("jobDescription", "") or ""
+        jd_text = ""
+        if desc_html:
+            jd_text = BeautifulSoup(desc_html, "html.parser").get_text(separator="\n").strip()
+        loc_parts = []
+        if info.get("location"):
+            loc_parts.append(str(info["location"]))
+        country = info.get("country")
+        if isinstance(country, dict) and country.get("descriptor"):
+            loc_parts.append(str(country["descriptor"]))
+        extra = info.get("additionalLocations") or []
+        if isinstance(extra, list):
+            loc_parts.extend(str(x) for x in extra if x)
+        return {"jd_text": jd_text, "location": ", ".join(loc_parts)}
     except Exception as exc:
         logger.debug(f"Workday detail fetch failed for {external_path}: {exc}")
-        return ""
+        return empty
 
 
 def _scrape_workday(company: dict, roles: List[str]) -> List[dict]:
@@ -420,7 +448,9 @@ def _scrape_workday(company: dict, roles: List[str]) -> List[dict]:
                     continue
 
                 location = posting.get("locationsText", "")
-                if not _location_matches(location, loc_filter):
+                ambiguous = _location_is_ambiguous(location)
+                india_loc = (not loc_filter) or _location_matches(location, loc_filter)
+                if not india_loc and not (ambiguous and _title_has_entry_signal(title)):
                     continue
 
                 posted_on = posting.get("postedOn", "")
@@ -436,13 +466,17 @@ def _scrape_workday(company: dict, roles: List[str]) -> List[dict]:
                     continue
                 seen_urls.add(job_url)
 
-                jd_text = _fetch_workday_job_detail(working_host, tenant, api_id, external_path)
+                detail = _fetch_workday_job_detail(working_host, tenant, api_id, external_path)
+                location = detail.get("location") or location
+                if loc_filter and not _location_matches(location, loc_filter):
+                    continue
+
                 job_data = normalize_job({
                     "title": title,
                     "company": name,
                     "location": location,
                     "url": job_url,
-                    "jd_text": jd_text,
+                    "jd_text": detail.get("jd_text") or "",
                     "easy_apply": False,
                     "ats_type": "workday",
                 }, "company_careers")

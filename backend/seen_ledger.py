@@ -36,7 +36,6 @@ BLOCKING_STATUSES = {
     "interviewing",
     "rejected",
     "offer",
-    "expired",
 }
 
 # Query parameters that identify the referrer rather than the posting. Stripping

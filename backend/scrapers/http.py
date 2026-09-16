@@ -72,19 +72,26 @@ def request(
     *,
     timeout: int = DEFAULT_TIMEOUT,
     max_retries: int = MAX_RETRIES,
+    fresh: bool = False,
     **kwargs,
 ) -> requests.Response:
     """Issue a request, retrying transient failures with exponential backoff.
 
     Returns the last Response received. Raises requests.RequestException only
     if every attempt raised without producing a response.
+
+    fresh=True skips the thread-local Session so guest APIs (LinkedIn JD,
+    Workday detail) do not inherit cookies that trigger 429s.
     """
     last_exc: Optional[Exception] = None
     last_response: Optional[requests.Response] = None
 
     for attempt in range(max_retries + 1):
         try:
-            response = _session().request(method, url, timeout=timeout, **kwargs)
+            if fresh:
+                response = requests.request(method, url, timeout=timeout, **kwargs)
+            else:
+                response = _session().request(method, url, timeout=timeout, **kwargs)
         except requests.RequestException as exc:
             last_exc = exc
             if attempt == max_retries:
@@ -115,11 +122,13 @@ def request(
 
 
 def get(url: str, **kwargs) -> requests.Response:
-    return request("GET", url, **kwargs)
+    fresh = bool(kwargs.pop("fresh", False))
+    return request("GET", url, fresh=fresh, **kwargs)
 
 
 def post(url: str, **kwargs) -> requests.Response:
-    return request("POST", url, **kwargs)
+    fresh = bool(kwargs.pop("fresh", False))
+    return request("POST", url, fresh=fresh, **kwargs)
 
 
 def is_rate_limited(response: requests.Response) -> bool:

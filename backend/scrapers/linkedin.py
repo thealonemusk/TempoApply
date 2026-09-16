@@ -14,7 +14,7 @@ from loguru import logger
 
 from backend.scrapers import http
 from backend.scrapers.base import normalize_job
-from backend.scrapers.filter_utils import passes_hard_filters
+from backend.scrapers.filter_utils import ENTRY_TITLE_SIGNALS, passes_hard_filters
 from backend.scrapers.registry import resolve_discovery_roles
 from backend.scan_control import should_stop
 from backend.config import settings
@@ -36,7 +36,7 @@ SKIP_SEARCH_LOCATIONS = {"remote", "work from home", "wfh", "anywhere"}
 
 LINKEDIN_PAGES = 3
 PAGE_SIZE = 10
-JD_WORKERS = 12
+JD_WORKERS = 6
 
 
 def _merge_locations(locations: List[str]) -> List[str]:
@@ -132,6 +132,11 @@ def _jd_from_html(html) -> str:
     return jd_el.get_text(separator="\n").strip() if jd_el else ""
 
 
+def _has_entry_title(title: str) -> bool:
+    t = (title or "").lower()
+    return any(sig in t for sig in ENTRY_TITLE_SIGNALS)
+
+
 def _scrape_job_detail_bs4(url: str) -> dict:
     empty = {"jd_text": "", "easy_apply": False, "recruiter_profile": ""}
     job_id = _linkedin_job_id(url)
@@ -141,9 +146,7 @@ def _scrape_job_detail_bs4(url: str) -> dict:
     pages.append(url)
     for page_url in pages:
         try:
-            resp = http.get(page_url, headers=HEADERS)
-            if resp.status_code != 200:
-                continue
+            resp = http.get(page_url, headers=HEADERS, fresh=True)
             jd_text = _jd_from_html(resp.content)
             if len(jd_text) >= 80:
                 return {"jd_text": jd_text, "easy_apply": False, "recruiter_profile": ""}
@@ -234,7 +237,10 @@ def _enrich_listings(listings: List[dict]) -> List[dict]:
     enriched = []
     for listing, detail in zip(listings, details):
         job_data = {**listing, **detail, "platform": "linkedin"}
-        ok, reason = passes_hard_filters(job_data)
+        ok, reason = passes_hard_filters(
+            job_data,
+            require_jd=not _has_entry_title(job_data.get("title", "")),
+        )
         if not ok:
             if "JD missing" in reason:
                 reasons["jd_missing"] += 1

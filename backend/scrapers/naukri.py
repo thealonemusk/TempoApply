@@ -112,8 +112,8 @@ async def scrape_naukri_jobs(
                         job_slug = _role_slug(role)
                         loc_slug = _loc_slug(location)
                         search_url = (
-                            f"https://www.naukri.com/{job_slug}-jobs-in-{loc_slug}"
-                            f"?experience=0&jobAge={NAUKRI_JOB_AGE_DAYS}&sort=1&pageNo={page_no}"
+                            f"https://www.naukri.com/{job_slug}-jobs-in-{loc_slug}-0-to-2-years"
+                            f"?jobAge={NAUKRI_JOB_AGE_DAYS}&sort=1&pageNo={page_no}"
                         )
 
                         await page.goto(search_url, timeout=30000, wait_until="domcontentloaded")
