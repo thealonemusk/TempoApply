@@ -12,6 +12,8 @@ FIELD_ALIASES: List[Tuple[str, Tuple[str, ...]]] = [
     ("last_name", ("last name", "lastname", "surname", "family name", "legal last")),
     ("full_name", ("full name", "legal name", "applicant name", "your name", "candidate name")),
     ("email", ("email address", "e-mail", "email")),
+    # Must precede "phone": Workday asks for a *device type* ("Mobile"), not a number.
+    ("phone_device_type", ("phone device type", "phone type", "device type")),
     ("phone", ("phone number", "mobile number", "telephone", "mobile phone", "cell phone", "phone", "mobile", "cell")),
     ("phone_country", ("phone country", "country code", "dialing code")),
     ("linkedin", ("linkedin url", "linkedin profile link", "linkedin profile", "linkedin")),
@@ -35,9 +37,11 @@ FIELD_ALIASES: List[Tuple[str, Tuple[str, ...]]] = [
     ("years_experience", ("years of experience", "years experience", "total experience", "experience (years)")),
     ("earliest_start", ("earliest start", "start date", "available from", "availability date", "when can you start", "date available")),
     ("cover_letter", ("cover letter", "additional information", "additional details", "comments", "message to hiring")),
-    ("school", ("school name", "university", "college", "institution")),
+    ("school", ("school name", "university", "college", "institution", "school")),
     ("degree", ("degree", "qualification")),
     ("major", ("major", "field of study", "discipline", "specialization")),
+    ("skills", ("technical skills", "key skills", "relevant skills", "core skills",
+                "primary skills", "skill set", "skills")),
     ("how_heard", ("how did you hear", "where did you hear", "how did you find", "referral source", "source")),
     ("gpa", ("cgpa", "gpa", "grade point")),
 ]
@@ -106,6 +110,7 @@ def value_for_key(profile: ApplicantProfile, key: str, job_title: str = "", comp
         "phone": profile.phone_e164() or profile.phone,
         "phone_national": profile.phone_national(),
         "phone_country": profile.phone_country,
+        "phone_device_type": "Mobile",
         "linkedin": profile.linkedin,
         "github": profile.github,
         "portfolio": profile.portfolio or profile.github,
@@ -123,6 +128,7 @@ def value_for_key(profile: ApplicantProfile, key: str, job_title: str = "", comp
         "earliest_start": profile.earliest_start,
         "salary_expectation": profile.salary_expectation,
         "cover_letter": profile.cover_letter(job_title, company),
+        "skills": profile.skills,
         "school": edu.school,
         "degree": edu.degree,
         "major": edu.major,
@@ -236,9 +242,30 @@ def is_consent_label(label: str) -> bool:
     ))
 
 
-def is_skip_field(label: str, name: str, autocomplete: str) -> bool:
-    blob = _norm(f"{label} {name} {autocomplete}")
-    if any(x in blob for x in ("honeypot", "website_url", "leave this blank", "do not fill")):
+# Bot traps. Workday ships one on every Create Account step: a real, rendered,
+# visible input whose label tells a human not to touch it (Intel's is
+# data-automation-id="beecatcher"). Filling one gets the application discarded
+# without any error, so these are matched before anything else.
+TRAP_PHRASES = (
+    "honeypot", "bee catcher", "beecatcher",
+    "for robots only", "robots only", "only for robots",
+    "do not enter if you", "if you are human", "if you re human",
+    "leave this blank", "leave this field blank", "do not fill",
+)
+
+
+def is_skip_field(label: str, name: str, autocomplete: str, automation: str = "") -> bool:
+    raw = f"{label} {name} {autocomplete} {automation}".lower()
+    blob = _norm(raw)
+    if any(phrase in blob or phrase in raw for phrase in TRAP_PHRASES):
+        return True
+    # `_norm` turns underscores into spaces, so trap names have to be matched raw.
+    # Only a field with no label of its own is the spam trap — a labeled one is a
+    # genuine portfolio question. A "label" echoing the name is no label at all.
+    label_n, name_n = _norm(label), _norm(name)
+    if (not label_n or label_n == name_n) and re.search(
+        r"\b(website_url|url_website|homepage_url)\b", raw
+    ):
         return True
     if name.startswith("utf8") or name in {"_method", "authenticity_token"}:
         return True

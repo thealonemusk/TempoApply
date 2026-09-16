@@ -388,7 +388,7 @@ async def fill_form(
         selector = field.get("selector")
         if not selector:
             continue
-        if is_skip_field(label, name, field.get("autocomplete") or ""):
+        if is_skip_field(label, name, field.get("autocomplete") or "", field.get("automation") or ""):
             skipped += 1
             continue
         if ftype == "file":

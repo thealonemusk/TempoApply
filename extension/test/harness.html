@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Job Application for Backend Engineer at AcmeCorp</title>
+    <style>
+      body { font: 14px/1.5 system-ui, sans-serif; margin: 0; padding: 24px; max-width: 760px; background: #f8fafc; color: #0f172a; }
+      h2 { margin: 28px 0 10px; font-size: 15px; text-transform: uppercase; letter-spacing: .06em; color: #475569; }
+      section { background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 16px; margin-bottom: 18px; }
+      label { display: block; font-weight: 600; font-size: 12.5px; margin-bottom: 4px; }
+      input[type="text"], input[type="email"], input[type="tel"], input[type="date"], select, textarea {
+        width: 100%; padding: 7px 9px; border: 1px solid #cbd5e1; border-radius: 6px; font: inherit; background: #fff;
+      }
+      textarea { min-height: 64px; }
+      .field { margin-bottom: 14px; }
+      fieldset { border: 1px solid #e2e8f0; border-radius: 8px; margin-bottom: 14px; }
+      legend { font-weight: 600; font-size: 12.5px; padding: 0 6px; }
+      fieldset label { display: inline-flex; gap: 6px; align-items: center; font-weight: 400; margin-right: 16px; }
+      /* Workday-style dropdown button */
+      button[aria-haspopup="listbox"], .select__control {
+        width: 100%; text-align: left; padding: 7px 9px; border: 1px solid #cbd5e1;
+        border-radius: 6px; background: #fff; font: inherit; cursor: pointer; color: #64748b;
+      }
+      [role="listbox"] {
+        position: absolute; z-index: 50; background: #fff; border: 1px solid #cbd5e1;
+        border-radius: 6px; box-shadow: 0 8px 20px rgba(0,0,0,.12); min-width: 240px; max-height: 220px; overflow: auto;
+      }
+      [role="option"] { padding: 6px 10px; cursor: pointer; }
+      [role="option"]:hover { background: #eef2ff; }
+      [data-automation-id="searchBox"] { width: calc(100% - 16px); margin: 8px; padding: 5px 8px; border: 1px solid #cbd5e1; border-radius: 5px; }
+      .hp { position: absolute; left: -9999px; }
+    </style>
+  </head>
+  <body>
+    <h1 style="font-size:18px">Backend Engineer — AcmeCorp</h1>
+
+    <!-- ── Workday-shaped block: no <select> anywhere, labels on formField wrappers ── -->
+    <h2>Workday-style (My Information)</h2>
+    <section id="workday">
+      <div class="field" data-automation-id="formField-legalNameSection_firstName">
+        <label for="wd-first">First Name</label>
+        <input id="wd-first" type="text" data-automation-id="legalNameSection_firstName" required />
+      </div>
+      <div class="field" data-automation-id="formField-legalNameSection_lastName">
+        <label for="wd-last">Last Name</label>
+        <input id="wd-last" type="text" data-automation-id="legalNameSection_lastName" required />
+      </div>
+      <div class="field" data-automation-id="formField-addressSection_city">
+        <label for="wd-city">City</label>
+        <input id="wd-city" type="text" data-automation-id="addressSection_city" />
+      </div>
+      <div class="field" data-automation-id="formField-addressSection_postalCode">
+        <label for="wd-zip">Postal Code</label>
+        <input id="wd-zip" type="text" data-automation-id="addressSection_postalCode" />
+      </div>
+      <div class="field" data-automation-id="formField-country">
+        <label id="wd-country-label">Country</label>
+        <button type="button" aria-haspopup="listbox" aria-labelledby="wd-country-label"
+                data-automation-id="countryDropdown"
+                data-options="India|United States|United Kingdom|Singapore">Select One</button>
+      </div>
+      <div class="field" data-automation-id="formField-phone-device-type">
+        <label id="wd-phone-type-label">Phone Device Type</label>
+        <button type="button" aria-haspopup="listbox" aria-labelledby="wd-phone-type-label"
+                data-automation-id="phone-device-type"
+                data-options="Mobile|Home|Work|Fax">Select One</button>
+      </div>
+      <div class="field" data-automation-id="formField-phone-number">
+        <label for="wd-phone">Phone Number</label>
+        <input id="wd-phone" type="tel" data-automation-id="phone-number" required />
+      </div>
+      <div class="field" data-automation-id="formField-source">
+        <label id="wd-source-label">How Did You Hear About Us?</label>
+        <div data-automation-id="multiSelectContainer" role="combobox" aria-labelledby="wd-source-label"
+             data-options="LinkedIn|Company Website|Job Board|Referral|University">Select One</div>
+      </div>
+      <div class="field" data-automation-id="formField-sponsorship">
+        <label id="wd-sponsor-label">Will you now or in the future require sponsorship?</label>
+        <button type="button" aria-haspopup="listbox" aria-labelledby="wd-sponsor-label"
+                data-automation-id="sponsorshipDropdown" aria-required="true"
+                data-options="Yes|No">Select One</button>
+      </div>
+      <div class="field" data-automation-id="formField-workAuth">
+        <label id="wd-auth-label">Are you legally authorized to work in India?</label>
+        <button type="button" aria-haspopup="listbox" aria-labelledby="wd-auth-label"
+                data-automation-id="workAuthDropdown" aria-required="true"
+                data-options="Yes|No">Select One</button>
+      </div>
+      <div class="field" data-automation-id="formField-resume">
+        <label for="wd-resume">Resume/CV</label>
+        <input id="wd-resume" type="file" data-automation-id="file-upload-input-ref" required />
+      </div>
+    </section>
+
+    <!-- ── Glassdoor / smartapply-shaped block: fieldsets with legends ── -->
+    <h2>Glassdoor-style (Indeed smartapply)</h2>
+    <section id="glassdoor">
+      <div class="field">
+        <label for="gd-name">Full name</label>
+        <input id="gd-name" type="text" name="name" required />
+      </div>
+      <div class="field">
+        <label for="gd-email">Email address</label>
+        <input id="gd-email" type="email" name="email" autocomplete="email" required />
+      </div>
+      <div class="field">
+        <label for="gd-loc">City, State</label>
+        <input id="gd-loc" type="text" name="location" />
+      </div>
+      <fieldset>
+        <legend>Are you willing to relocate to Bengaluru?</legend>
+        <label><input type="radio" name="relocate" value="yes" required /> Yes</label>
+        <label><input type="radio" name="relocate" value="no" required /> No</label>
+      </fieldset>
+      <fieldset>
+        <legend>Do you now or will you in the future require visa sponsorship?</legend>
+        <label><input type="radio" name="sponsor" value="yes" required /> Yes</label>
+        <label><input type="radio" name="sponsor" value="no" required /> No</label>
+      </fieldset>
+      <div class="field">
+        <label for="gd-notice">What is your notice period?</label>
+        <input id="gd-notice" type="text" name="q_notice" required />
+      </div>
+      <div class="field">
+        <label for="gd-ctc">Expected CTC (INR)</label>
+        <input id="gd-ctc" type="text" name="q_ctc" required />
+      </div>
+    </section>
+
+    <!-- ── Greenhouse-shaped block: native selects + a react-select combobox ── -->
+    <h2>Greenhouse-style</h2>
+    <section id="greenhouse">
+      <div class="field">
+        <label for="gh-first">First Name *</label>
+        <input id="gh-first" type="text" name="job_application[first_name]" required />
+      </div>
+      <div class="field">
+        <label for="gh-last">Last Name *</label>
+        <input id="gh-last" type="text" name="job_application[last_name]" required />
+      </div>
+      <div class="field">
+        <label for="gh-linkedin">LinkedIn Profile</label>
+        <input id="gh-linkedin" type="text" name="q_linkedin" />
+      </div>
+      <div class="field">
+        <label for="gh-site">Website</label>
+        <input id="gh-site" type="text" name="q_site" />
+      </div>
+      <div class="field">
+        <label for="gh-school">School</label>
+        <select id="gh-school" name="school">
+          <option value="">Select...</option>
+          <option>Indian Institute of Technology, Delhi</option>
+          <option>National Institute of Technology, Jalandhar</option>
+          <option>Birla Institute of Technology</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="gh-degree">Degree</label>
+        <select id="gh-degree" name="degree">
+          <option value="">Select...</option>
+          <option>Bachelor's Degree</option>
+          <option>B.Tech</option>
+          <option>Master's Degree</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="gh-gender">Gender</label>
+        <select id="gh-gender" name="gender">
+          <option value="">Please select</option>
+          <option>Male</option>
+          <option>Female</option>
+          <option>Decline To Self Identify</option>
+        </select>
+      </div>
+      <div class="field">
+        <label id="gh-hear-label">How did you hear about this job?</label>
+        <div class="select__control" role="combobox" aria-labelledby="gh-hear-label"
+             data-options="LinkedIn|Company website|Referral|Career fair">Select...</div>
+      </div>
+      <div class="field">
+        <label for="gh-start">Earliest start date</label>
+        <input id="gh-start" type="date" name="start_date" />
+      </div>
+      <div class="field">
+        <label for="gh-why">Why do you want to work here? *</label>
+        <textarea id="gh-why" name="q_why" required></textarea>
+      </div>
+      <div class="field">
+        <label for="gh-resume">Resume/CV *</label>
+        <input id="gh-resume" type="file" name="resume" required />
+      </div>
+      <div class="field">
+        <label for="gh-cover">Cover Letter</label>
+        <input id="gh-cover" type="file" name="cover_letter" />
+      </div>
+      <div class="field">
+        <label><input type="checkbox" name="consent" required /> I agree to the privacy policy</label>
+      </div>
+      <!-- spam trap: unlabeled, must never be filled -->
+      <div class="hp"><input type="text" name="website_url" tabindex="-1" autocomplete="off" /></div>
+    </section>
+
+    <script>
+      /**
+       * Minimal stand-ins for the real widgets: clicking opens a listbox of
+       * [role="option"] nodes, exactly like Workday's promptOption list and
+       * react-select's menu, so the filler's async path is genuinely exercised.
+       */
+      let openList = null;
+
+      function closeList() {
+        if (openList) { openList.remove(); openList = null; }
+      }
+
+      function openFor(trigger) {
+        closeList();
+        const options = (trigger.dataset.options || "").split("|").filter(Boolean);
+        const list = document.createElement("div");
+        list.setAttribute("role", "listbox");
+        list.setAttribute("data-automation-id", "selectWidget-listbox");
+
+        const isMulti = trigger.getAttribute("data-automation-id") === "multiSelectContainer";
+        let search = null;
+        if (isMulti) {
+          search = document.createElement("input");
+          search.setAttribute("data-automation-id", "searchBox");
+          search.placeholder = "Search";
+          list.appendChild(search);
+        }
+
+        const holder = document.createElement("div");
+        list.appendChild(holder);
+
+        const render = (filter) => {
+          holder.innerHTML = "";
+          options
+            .filter((o) => !filter || o.toLowerCase().includes(filter.toLowerCase()))
+            .forEach((text) => {
+              const item = document.createElement("div");
+              item.setAttribute("role", "option");
+              item.setAttribute("data-automation-id", "promptOption");
+              item.textContent = text;
+              item.addEventListener("mousedown", (e) => e.preventDefault());
+              item.addEventListener("click", () => {
+                trigger.textContent = text;
+                trigger.dataset.value = text;
+                trigger.style.color = "#0f172a";
+                closeList();
+              });
+              holder.appendChild(item);
+            });
+        };
+        render("");
+        if (search) search.addEventListener("input", () => render(search.value));
+
+        const rect = trigger.getBoundingClientRect();
+        list.style.left = `${rect.left + window.scrollX}px`;
+        list.style.top = `${rect.bottom + window.scrollY + 3}px`;
+        list.style.width = `${rect.width}px`;
+        document.body.appendChild(list);
+        openList = list;
+        if (search) search.focus();
+      }
+
+      document.querySelectorAll('[data-options]').forEach((trigger) => {
+        trigger.addEventListener("click", () => openFor(trigger));
+      });
+
+      document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeList(); });
+    </script>
+  </body>
+</html>

@@ -53,12 +53,39 @@ TempoApply/
 │   │   ├── instahyre.py
 │   │   ├── wellfound.py       # Optional (not in default scan)
 │   │   └── company_careers.py # Greenhouse / Lever / Workday
+│   ├── applier/
+│   │   ├── fields.py          # Label → value resolver (shared by both apply paths)
+│   │   ├── filler.py          # Playwright form filling
+│   │   └── workday.py         # Workday apply flow
 │   ├── db/models.py
-│   └── api/main.py
-└── dashboard/
-    ├── app/(dashboard)/       # Jobs, Analytics, Settings
-    ├── components/            # Sidebar, JobRow, UI primitives
-    └── lib/                   # api.ts, types, platforms
+│   └── api/
+│       ├── main.py
+│       └── autofill.py        # Resolver API for the browser extension
+├── dashboard/
+│   ├── app/(dashboard)/       # Jobs, Analytics, Settings
+│   ├── components/            # Sidebar, JobRow, UI primitives
+│   └── lib/                   # api.ts, types, platforms
+└── extension/                 # Chrome extension — assisted autofill
+    ├── src/                   # scraper, filler, widget, service worker
+    └── test/                  # Workday/Glassdoor/Greenhouse harness
+```
+
+## Browser extension
+
+A Simplify-style autofill panel for applications you open yourself. Click
+**Autofill**, review what it wrote, submit it by hand. Load it from
+`chrome://extensions` → Developer mode → **Load unpacked** → `extension/`.
+
+It carries no rules of its own: it scrapes the form, posts the labels to
+`/api/autofill/resolve`, and writes back what the backend answers — the same
+`backend/applier/fields.py` resolver the headless auto-apply uses. Handles
+Workday's listbox widgets, forms embedded in an iframe (Glassdoor, Greenhouse
+boards), react-select comboboxes, radio groups and the resume upload; leaves
+subjective questions to you and flags them. See `extension/README.md`.
+
+```bash
+python extension/test/run_tests.py                # headless, no install needed
+python extension/test/run_tests.py --integration  # real extension in Chrome
 ```
 
 ## Features
@@ -66,4 +93,5 @@ TempoApply/
 - Hard experience boundary (<2 years) and senior title exclusion
 - Multi-platform parallel scraping via registry
 - Apple-inspired dashboard with light/dark mode
+- Assisted autofill on any job portal via the browser extension
 - Manual job add, status tracking, analytics

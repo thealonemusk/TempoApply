@@ -24,6 +24,7 @@ from backend.config import settings
 from backend.platforms import DEFAULT_SCAN_PLATFORMS, SCAN_PLATFORMS, ALL_PLATFORMS
 from backend.applier.ats import detect_ats
 from backend.applier.profile import RESUMES_DIR, load_profile, save_profile
+from backend.api.autofill import router as autofill_router
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
@@ -39,10 +40,15 @@ app = FastAPI(title="TempoApply API", version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    # The browser extension's service worker calls the API from a
+    # chrome-extension:// origin, which changes with every unpacked install.
+    allow_origin_regex=r"^(chrome|moz)-extension://.*$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(autofill_router)
 
 
 @app.on_event("startup")

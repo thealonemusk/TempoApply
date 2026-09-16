@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>My Experience — Backend Engineer at AcmeCorp</title>
+    <style>
+      body { font: 14px/1.5 system-ui, sans-serif; margin: 0; padding: 24px; max-width: 780px; background: #f8fafc; color: #0f172a; }
+      section { background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 16px; margin-bottom: 18px; }
+      h3 { margin: 0 0 12px; font-size: 14px; }
+      label { display: block; font-weight: 600; font-size: 12.5px; margin-bottom: 4px; }
+      input[type="text"], textarea { width: 100%; padding: 7px 9px; border: 1px solid #cbd5e1; border-radius: 6px; font: inherit; }
+      textarea { min-height: 56px; }
+      .field { margin-bottom: 12px; }
+      .entry { border: 1px dashed #cbd5e1; border-radius: 8px; padding: 12px; margin-bottom: 12px; }
+      .entry h4 { margin: 0 0 10px; font-size: 12px; color: #64748b; text-transform: uppercase; letter-spacing: .05em; }
+      .row { display: flex; gap: 10px; }
+      .row .field { flex: 1; }
+      button { padding: 6px 14px; border: 1px solid #cbd5e1; background: #fff; border-radius: 6px; font: inherit; cursor: pointer; }
+      button:hover { background: #f1f5f9; }
+      [data-automation-id="multiSelectContainer"] { border: 1px solid #cbd5e1; border-radius: 6px; padding: 7px 9px; cursor: pointer; color: #64748b; background: #fff; }
+      .chips { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 6px; }
+      .chip { background: #eef2ff; color: #3730a3; border-radius: 4px; padding: 2px 7px; font-size: 12px; }
+      [role="listbox"] { position: absolute; z-index: 50; background: #fff; border: 1px solid #cbd5e1; border-radius: 6px; box-shadow: 0 8px 20px rgba(0,0,0,.12); min-width: 240px; max-height: 210px; overflow: auto; }
+      [role="option"] { padding: 6px 10px; cursor: pointer; }
+      [role="option"]:hover { background: #eef2ff; }
+      [data-automation-id="searchBox"] { width: calc(100% - 16px); margin: 8px; padding: 5px 8px; border: 1px solid #cbd5e1; border-radius: 5px; }
+    </style>
+  </head>
+  <body>
+    <h1 style="font-size:17px">My Experience</h1>
+    <p style="color:#64748b;font-size:13px">current step 3 of 6</p>
+
+    <!-- Everything below starts EMPTY behind an Add button, exactly like Workday -->
+
+    <section data-automation-id="workExperienceSection">
+      <h3>Work Experience</h3>
+      <div data-entries="experience"></div>
+      <button type="button" data-add="experience">Add</button>
+    </section>
+
+    <section data-automation-id="educationSection">
+      <h3>Education</h3>
+      <div data-entries="education"></div>
+      <button type="button" data-add="education">Add</button>
+    </section>
+
+    <section data-automation-id="skillsSection">
+      <h3>Skills</h3>
+      <div class="field" data-automation-id="formField-skills">
+        <label id="skills-label">Skills</label>
+        <div class="chips" data-chips></div>
+        <div data-automation-id="multiSelectContainer" role="combobox" aria-labelledby="skills-label">Select One</div>
+      </div>
+    </section>
+
+    <section data-automation-id="websiteSection">
+      <h3>Websites</h3>
+      <div data-entries="website"></div>
+      <button type="button" data-add="website">Add</button>
+    </section>
+
+    <section data-automation-id="resumeSection">
+      <h3>Resume</h3>
+      <div class="field">
+        <label for="res">Resume/CV</label>
+        <input id="res" type="file" data-automation-id="file-upload-input-ref" />
+      </div>
+    </section>
+
+    <script>
+      const TEMPLATES = {
+        experience: (n) => `
+          <div class="entry" data-automation-id="workExperience-${n}">
+            <h4>Work Experience ${n}</h4>
+            <div class="field"><label for="jt${n}">Job Title</label><input id="jt${n}" type="text" data-automation-id="jobTitle"></div>
+            <div class="field"><label for="co${n}">Company</label><input id="co${n}" type="text" data-automation-id="company"></div>
+            <div class="field"><label for="lo${n}">Location</label><input id="lo${n}" type="text" data-automation-id="location"></div>
+            <div class="field"><label><input type="checkbox" data-automation-id="currentlyWorkHere"> I currently work here</label></div>
+            <div class="row">
+              <div class="field"><label for="fm${n}">From Month</label><input id="fm${n}" type="text" data-automation-id="dateSectionMonth-input"></div>
+              <div class="field"><label for="fy${n}">From Year</label><input id="fy${n}" type="text" data-automation-id="dateSectionYear-input"></div>
+            </div>
+            <div class="row">
+              <div class="field"><label for="tm${n}">To Month</label><input id="tm${n}" type="text" data-automation-id="dateSectionMonth-input"></div>
+              <div class="field"><label for="ty${n}">To Year</label><input id="ty${n}" type="text" data-automation-id="dateSectionYear-input"></div>
+            </div>
+            <div class="field"><label for="rd${n}">Role Description</label><textarea id="rd${n}" data-automation-id="description"></textarea></div>
+          </div>`,
+        education: (n) => `
+          <div class="entry" data-automation-id="education-${n}">
+            <h4>Education ${n}</h4>
+            <div class="field"><label for="sc${n}">School or University</label><input id="sc${n}" type="text" data-automation-id="school"></div>
+            <div class="field"><label id="dg${n}l">Degree</label>
+              <div data-automation-id="multiSelectContainer" role="combobox" aria-labelledby="dg${n}l"
+                   data-options="Bachelor's Degree|B.Tech|Master's Degree|Doctorate">Select One</div></div>
+            <div class="field"><label for="fs${n}">Field of Study</label><input id="fs${n}" type="text" data-automation-id="fieldOfStudy"></div>
+            <div class="row">
+              <div class="field"><label for="ef${n}">From Year</label><input id="ef${n}" type="text"></div>
+              <div class="field"><label for="et${n}">To Year</label><input id="et${n}" type="text"></div>
+            </div>
+            <div class="field"><label for="gp${n}">Overall Result / GPA</label><input id="gp${n}" type="text" data-automation-id="gpa"></div>
+          </div>`,
+        website: (n) => `
+          <div class="entry" data-automation-id="websitePanelSet-${n}">
+            <div class="field"><label for="wu${n}">URL</label><input id="wu${n}" type="text" data-automation-id="website"></div>
+          </div>`,
+      };
+
+      const counts = { experience: 0, education: 0, website: 0 };
+
+      document.querySelectorAll("[data-add]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const kind = btn.dataset.add;
+          counts[kind] += 1;
+          const host = document.querySelector(`[data-entries="${kind}"]`);
+          host.insertAdjacentHTML("beforeend", TEMPLATES[kind](counts[kind]));
+          btn.textContent = "Add Another";
+          wireWidgets();
+        });
+      });
+
+      // Dropdown / multiselect stand-ins, same shape as Workday's prompt list.
+      const SKILL_OPTIONS = [
+        "Java", "JavaScript", "Python", "C", "C++", "SQL", "Spring Boot", "Node.js",
+        "REST APIs", "Microservices", "Docker", "Kubernetes", "Event-Driven Architecture",
+      ];
+      let openList = null;
+      const closeList = () => { if (openList) { openList.remove(); openList = null; } };
+
+      function openFor(trigger) {
+        closeList();
+        const isSkills = trigger.closest('[data-automation-id="formField-skills"]');
+        const options = isSkills ? SKILL_OPTIONS : (trigger.dataset.options || "").split("|").filter(Boolean);
+        const list = document.createElement("div");
+        list.setAttribute("role", "listbox");
+
+        const search = document.createElement("input");
+        search.setAttribute("data-automation-id", "searchBox");
+        search.placeholder = "Search";
+        list.appendChild(search);
+        const holder = document.createElement("div");
+        list.appendChild(holder);
+
+        const render = (filter) => {
+          holder.innerHTML = "";
+          options
+            .filter((o) => !filter || o.toLowerCase().includes(filter.toLowerCase()))
+            .forEach((text) => {
+              const item = document.createElement("div");
+              item.setAttribute("role", "option");
+              item.setAttribute("data-automation-id", "promptOption");
+              item.textContent = text;
+              item.addEventListener("mousedown", (e) => e.preventDefault());
+              item.addEventListener("click", () => {
+                if (isSkills) {
+                  const chips = document.querySelector("[data-chips]");
+                  if (![...chips.children].some((c) => c.textContent === text)) {
+                    const chip = document.createElement("span");
+                    chip.className = "chip";
+                    chip.textContent = text;
+                    chips.appendChild(chip);
+                  }
+                  closeList();
+                } else {
+                  trigger.textContent = text;
+                  trigger.dataset.value = text;
+                  trigger.style.color = "#0f172a";
+                  closeList();
+                }
+              });
+              holder.appendChild(item);
+            });
+        };
+        render("");
+        search.addEventListener("input", () => render(search.value));
+
+        const rect = trigger.getBoundingClientRect();
+        list.style.left = `${rect.left + window.scrollX}px`;
+        list.style.top = `${rect.bottom + window.scrollY + 3}px`;
+        list.style.width = `${rect.width}px`;
+        document.body.appendChild(list);
+        openList = list;
+      }
+
+      function wireWidgets() {
+        document.querySelectorAll('[data-automation-id="multiSelectContainer"]').forEach((el) => {
+          if (el.dataset.wired) return;
+          el.dataset.wired = "1";
+          el.addEventListener("click", () => openFor(el));
+        });
+      }
+      wireWidgets();
+      document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeList(); });
+    </script>
+  </body>
+</html>
