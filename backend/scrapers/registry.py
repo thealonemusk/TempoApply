@@ -60,6 +60,27 @@ async def _run_company_careers(roles, max_jobs, headless):
     return await scrape_company_career_jobs(roles=roles, max_jobs=max_jobs)
 
 
+async def _run_bigtech(roles, max_jobs, headless):
+    """
+    Amazon, Microsoft and Google — each runs its own ATS, none speaks
+    Greenhouse or Lever, so they need bespoke handling. Amazon has a public
+    JSON API; the other two are client-rendered and need a visible browser,
+    which is why headless is not honoured for them.
+    """
+    import asyncio
+
+    from backend.scrapers.bigtech import scrape_amazon, scrape_google, scrape_microsoft
+
+    per_source = max(10, max_jobs // 3)
+    jobs = await asyncio.to_thread(scrape_amazon, roles, per_source)
+    for fn in (scrape_microsoft, scrape_google):
+        try:
+            jobs += await fn(roles, per_source, headless=False)
+        except Exception:
+            continue          # one silent source must not lose the others
+    return jobs[:max_jobs]
+
+
 SCRAPER_REGISTRY: Dict[str, ScrapeFn] = {
     "linkedin": _run_linkedin,
     "indeed": _run_indeed,
@@ -67,6 +88,7 @@ SCRAPER_REGISTRY: Dict[str, ScrapeFn] = {
     "instahyre": _run_instahyre,
     "wellfound": _run_wellfound,
     "company_careers": _run_company_careers,
+    "bigtech": _run_bigtech,
 }
 
 SCRAPER_LABELS = {
@@ -76,6 +98,7 @@ SCRAPER_LABELS = {
     "instahyre": "InstaHyre",
     "wellfound": "Wellfound",
     "company_careers": "Company Careers",
+    "bigtech": "Amazon / Microsoft / Google",
     "manual": "Manual",
 }
 

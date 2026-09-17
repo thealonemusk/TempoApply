@@ -1,0 +1,305 @@
+"""
+Autopilot API — select the best N jobs, tailor, fill, and queue for review.
+
+Deliberately a separate router with its own status dict and its own URL prefix,
+so nothing here can disturb the existing scan and apply endpoints the dashboard
+depends on.
+
+The run never submits. It fills each application, screenshots it, and leaves a
+review queue — the user approves. That is a design decision, not a limitation:
+a mis-parsed field reaching a real employer cannot be recalled, and at the
+companies being targeted a wasted application costs months.
+"""
+from __future__ import annotations
+
+import asyncio
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi.responses import FileResponse
+from loguru import logger
+from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session
+
+from backend.applier.routing import Route
+from backend.autopilot.select import Tier, select
+from backend.config import settings
+from backend.db.models import Job, SessionLocal, get_db
+
+router = APIRouter(prefix="/api/autopilot", tags=["autopilot"])
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+SHOT_DIR = PROJECT_ROOT / "data" / "apply_logs"
+
+# Same shape as _scan_status / _apply_status in main.py, kept separate so an
+# autopilot run and a plain scan cannot corrupt each other's state.
+_status: Dict[str, Any] = {
+    "running": False,
+    "stage": "",
+    "done": 0,
+    "total": 0,
+    "current": "",
+    "last_result": None,
+    "started_at": None,
+}
+
+
+# ── Schemas ──────────────────────────────────────────────────────────────────
+
+class SelectRequest(BaseModel):
+    limit: int = Field(30, ge=1, le=200)
+    min_tier: str = "UNKNOWN"
+    auto_only: bool = False
+
+
+class RunRequest(BaseModel):
+    job_ids: List[str] = Field(default_factory=list)
+    tailor: bool = True
+    auto_submit: bool = False      # never true by default; the queue is the point
+
+
+def _tier_from_name(name: str) -> Tier:
+    try:
+        return Tier[(name or "UNKNOWN").upper()]
+    except KeyError:
+        return Tier.UNKNOWN
+
+
+# ── Selection ────────────────────────────────────────────────────────────────
+
+@router.get("/candidates")
+def candidates(
+    limit: int = Query(30, ge=1, le=200),
+    min_tier: str = Query("UNKNOWN"),
+    auto_only: bool = Query(False),
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    """
+    Rank every known job and return the chosen set plus what was passed over.
+
+    The rejected list is returned on purpose: it is the only way to tell whether
+    the criteria are excluding what you meant them to.
+    """
+    jobs = db.query(Job).filter(~Job.status.in_(["applied", "interviewing", "offer"])).all()
+    chosen, passed = select(
+        jobs,
+        preferred_locations=settings.preferred_locations_list,
+        limit=limit,
+        min_tier=_tier_from_name(min_tier),
+        auto_only=auto_only,
+    )
+
+    tally: Dict[str, int] = {}
+    for c in chosen:
+        tally[c.tier.name] = tally.get(c.tier.name, 0) + 1
+    routes: Dict[str, int] = {}
+    for c in chosen:
+        routes[c.routing.route.value] = routes.get(c.routing.route.value, 0) + 1
+
+    return {
+        "selected": [c.as_dict() for c in chosen],
+        "passed_over": [c.as_dict() for c in passed[:60]],
+        "stats": {
+            "pool": len(jobs),
+            "selected": len(chosen),
+            "eligible": len([c for c in passed if c.ok]) + len(chosen),
+            "by_tier": tally,
+            "by_route": routes,
+        },
+    }
+
+
+# ── The run ──────────────────────────────────────────────────────────────────
+
+@router.get("/status")
+def status() -> Dict[str, Any]:
+    return _status
+
+
+@router.post("/stop")
+def stop() -> Dict[str, Any]:
+    from backend.applier.control import request_stop
+
+    if not _status["running"]:
+        return {"message": "Autopilot is not running", "running": False}
+    request_stop()
+    return {"message": "Stop requested", "running": True}
+
+
+@router.post("/run")
+async def run(req: RunRequest, background_tasks: BackgroundTasks) -> Dict[str, Any]:
+    """Tailor and fill the chosen jobs, then stop for review."""
+    if _status["running"]:
+        raise HTTPException(status_code=409, detail="Autopilot is already running")
+
+    # Pre-flight in the endpoint, before the task is queued, so failures are
+    # visible as an HTTP error rather than buried in a background log.
+    from backend.api.main import _apply_status, _scan_status
+
+    if _scan_status.get("running"):
+        raise HTTPException(status_code=409, detail="A scan is running — wait for it to finish")
+    if _apply_status.get("running"):
+        raise HTTPException(status_code=409, detail="An apply run is in progress")
+    if not req.job_ids:
+        raise HTTPException(status_code=400, detail="No jobs selected")
+
+    from backend.applier.profile import load_profile
+
+    profile = load_profile()
+    missing = [m for m in profile.missing_required() if m != "resume"]
+    if missing:
+        raise HTTPException(status_code=400, detail="Profile incomplete: " + ", ".join(missing))
+
+    async def task() -> None:
+        from backend.applier.control import clear_stop
+        from backend.applier.engine import run_apply_pipeline
+
+        clear_stop()
+        _status.update(running=True, stage="starting", done=0,
+                       total=len(req.job_ids), current="", last_result=None,
+                       started_at=datetime.utcnow().isoformat())
+        result: Dict[str, Any] = {"tailored": [], "apply": None, "errors": []}
+        try:
+            if req.tailor:
+                _status["stage"] = "tailoring"
+                result["tailored"] = await asyncio.to_thread(_tailor_all, req.job_ids)
+
+            _status.update(stage="filling", done=0)
+            result["apply"] = await run_apply_pipeline(
+                job_ids=req.job_ids,
+                auto_submit=req.auto_submit,
+                headless=False,
+            )
+        except Exception as exc:  # noqa: BLE001 - surfaced through status
+            logger.exception("Autopilot run failed")
+            result["errors"].append(str(exc))
+        finally:
+            _status.update(running=False, stage="done", current="", last_result=result)
+
+    background_tasks.add_task(task)
+    return {"message": "Autopilot started", "running": True, "jobs": len(req.job_ids)}
+
+
+def _tailor_all(job_ids: List[str]) -> List[Dict[str, Any]]:
+    """Tailor each job's resume. A failure here must not stop the fill stage."""
+    from backend.resume import tailor as tailor_mod
+
+    out: List[Dict[str, Any]] = []
+    db = SessionLocal()
+    try:
+        for i, job_id in enumerate(job_ids, 1):
+            job = db.query(Job).filter(Job.id == job_id).first()
+            if not job:
+                continue
+            _status.update(done=i, current=f"{job.title} @ {job.company}")
+            if not (job.jd_text or "").strip():
+                out.append({"job_id": job_id, "ok": False, "error": "no job description stored"})
+                continue
+            try:
+                res = tailor_mod.tailor(
+                    job.jd_text, job_title=job.title, company=job.company, job_id=job.id
+                )
+                out.append({
+                    "job_id": job_id,
+                    "ok": res.ok,
+                    "pdf": res.pdf_path,
+                    "error": res.error,
+                    "coverage": (res.report.get("coverage", {}) or {}).get("delta"),
+                })
+                if res.ok:
+                    job.status = "tailored"
+                    db.commit()
+            except Exception as exc:  # noqa: BLE001
+                out.append({"job_id": job_id, "ok": False, "error": str(exc)})
+    finally:
+        db.close()
+    return out
+
+
+# ── Review queue ─────────────────────────────────────────────────────────────
+
+@router.get("/queue")
+def queue(db: Session = Depends(get_db)) -> Dict[str, Any]:
+    """Everything waiting on a human: filled-but-unsubmitted, and manual jobs."""
+    rows = (
+        db.query(Job)
+        .filter(Job.apply_status.in_(["needs_review", "manual_queue", "failed"]))
+        .order_by(Job.relevance_score.desc())
+        .all()
+    )
+    items = []
+    for job in rows:
+        shot = SHOT_DIR / f"{job.id}-filled.png"
+        if not shot.is_file():
+            shot = SHOT_DIR / f"{job.id}.png"
+        tailored = PROJECT_ROOT / "resumes" / "tailored"
+        pdf = next(tailored.glob(f"*_{job.id[:8]}/resume.pdf"), None) if tailored.is_dir() else None
+        items.append({
+            "job_id": job.id,
+            "title": job.title,
+            "company": job.company,
+            "location": job.location,
+            "url": job.url,
+            "ats": job.ats_type or "",
+            "apply_status": job.apply_status or "",
+            "reason": job.apply_error or "",
+            "has_screenshot": shot.is_file(),
+            "has_tailored_resume": bool(pdf),
+        })
+    return {"items": items, "count": len(items)}
+
+
+@router.get("/screenshot/{job_id}")
+def screenshot(job_id: str):
+    """The filled form, as the bot left it."""
+    for name in (f"{job_id}-filled.png", f"{job_id}.png"):
+        path = SHOT_DIR / name
+        if path.is_file():
+            return FileResponse(path, media_type="image/png")
+    raise HTTPException(status_code=404, detail="No screenshot for this job")
+
+
+@router.get("/resume/{job_id}")
+def tailored_resume(job_id: str):
+    """The tailored PDF produced for this job."""
+    tailored = PROJECT_ROOT / "resumes" / "tailored"
+    if tailored.is_dir():
+        match = next(tailored.glob(f"*_{job_id[:8]}/resume.pdf"), None)
+        if match:
+            return FileResponse(match, media_type="application/pdf",
+                                filename=f"resume_{job_id[:8]}.pdf")
+    raise HTTPException(status_code=404, detail="No tailored resume for this job")
+
+
+class DecisionRequest(BaseModel):
+    status: str = "applied"        # applied | ignored
+    notes: str = ""
+
+
+@router.post("/queue/{job_id}/decide")
+def decide(job_id: str, req: DecisionRequest, db: Session = Depends(get_db)) -> Dict[str, Any]:
+    """Record what the user did with a queued application."""
+    from backend import seen_ledger
+
+    job = db.query(Job).filter(Job.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    if req.status == "applied":
+        job.status = "applied"
+        job.apply_status = "applied"
+        job.applied_at = datetime.utcnow()
+    else:
+        job.status = "ignored"
+        job.apply_status = "skipped"
+    job.apply_error = req.notes or job.apply_error
+    db.commit()
+
+    seen_ledger.mark(
+        db, url=job.url, status="applied" if req.status == "applied" else "dismissed",
+        reason=req.notes or "autopilot review", title=job.title or "",
+        company=job.company or "", platform=job.platform or "", commit=True,
+    )
+    return {"success": True, "job_id": job_id, "status": job.status}

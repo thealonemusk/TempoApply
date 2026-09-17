@@ -223,9 +223,20 @@ def pick_option(options: List[str], desired: str) -> Optional[str]:
     for opt, n in cleaned:
         if n == d:
             return opt
-    for opt, n in cleaned:
-        if d in n or n in d:
-            return opt
+
+    # Among partial matches, prefer the most specific rather than the first in
+    # document order. A phone-country list matches "India" against "British
+    # Indian Ocean Territory" long before it reaches "India +91"; taking the
+    # earliest hit picks the wrong country.
+    partials = [(opt, n) for opt, n in cleaned if d in n or n in d]
+    if partials:
+        def rank(pair: Tuple[str, str]) -> Tuple[int, int, int]:
+            _, n = pair
+            starts_with = 0 if n.startswith(d) else 1
+            word_boundary = 0 if re.search(rf"(?<![a-z0-9]){re.escape(d)}(?![a-z0-9])", n) else 1
+            return (starts_with, word_boundary, abs(len(n) - len(d)))
+
+        return min(partials, key=rank)[0]
     decline_needles = ("decline", "do not want", "don't wish", "prefer not", "not listed", "i do not")
     if any(x in d for x in ("decline", "not want", "prefer not")):
         for opt, n in cleaned:

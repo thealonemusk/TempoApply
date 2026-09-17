@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -250,62 +251,239 @@ async def _select_option(scope: Page | FrameLocator, selector: str, options: Lis
             return False
 
 
-async def _fill_combobox(scope: Page | FrameLocator, selector: str, value: str) -> bool:
-    loc = _locator(scope, selector).first
-    try:
+# Where a dropdown's options render once it is open. Covers react-select
+# (Greenhouse, Lever, Ashby) and Workday's prompt list.
+#
+# `:not(.iti__country)` is load-bearing. The intl-tel-input phone widget keeps
+# ~240 hidden country <li role="option"> nodes in the DOM at all times, and they
+# sort ahead of everything else in document order — scanning a bounded window of
+# matches finds nothing but invisible phone countries and concludes the dropdown
+# never opened.
+OPTION_SELECTOR = (
+    '[data-automation-id="promptOption"], [data-automation-id="promptLeafNode"], '
+    '[data-automation-id="selectWidget-option"], [role="option"]:not(.iti__country), '
+    '.select__option, [class*="select__option"]'
+)
+
+# The box you type into once it is open. On Greenhouse the control *is* the
+# input; Workday renders a separate search field.
+SEARCH_BOX_SELECTOR = (
+    '[data-automation-id="searchBox"], input[role="combobox"], '
+    'input.select__input, input[id*="react-select"], input[placeholder*="Search" i]'
+)
+
+
+async def _open_options(scope, deadline_sec: float = 2.5) -> List[str]:
+    """Poll until the dropdown renders, and return its visible option texts."""
+    menu = scope.locator(OPTION_SELECTOR)
+    waited = 0.0
+    while waited < deadline_sec:
         try:
-            await loc.click(timeout=2000, force=True)
+            count = min(await menu.count(), 40)
         except Exception:
-            control = loc.locator('xpath=ancestor::*[contains(@class,"select")][1]')
-            if await control.count():
-                await control.first.click(timeout=2000, force=True)
-            else:
-                return False
-        typed = False
-        for inp_sel in (
-            selector,
-            f"{selector} input",
-            "input.select__input",
-            'input[id*="react-select"]',
-        ):
-            try:
-                target = _locator(scope, inp_sel).last if inp_sel != selector else loc
-                await target.fill(value, timeout=1200)
-                typed = True
-                break
-            except Exception:
-                continue
-        if not typed:
-            try:
-                await loc.press_sequentially(value, delay=20)
-            except Exception:
-                pass
-        await asyncio.sleep(0.35)
-        menu = scope.locator('.select__option, [class*="select__option"], [role="option"]:not(.iti__country)')
-        count = min(await menu.count(), 30)
-        desired = (value or "").strip().lower()
-        first_visible = None
+            count = 0
+        texts: List[str] = []
         for i in range(count):
             el = menu.nth(i)
             try:
                 if not await el.is_visible():
                     continue
+                if await el.evaluate("e => !!e.closest('.iti__country-list')"):
+                    continue
+                texts.append(((await el.inner_text()) or "").strip())
             except Exception:
                 continue
-            if first_visible is None:
-                first_visible = el
-            text = ((await el.inner_text()) or "").strip().lower()
-            if desired and (desired in text or text in desired):
-                await el.click(timeout=2000, force=True)
-                return True
-        if first_visible is not None:
-            await first_visible.click(timeout=2000, force=True)
+        if texts:
+            return texts
+        await asyncio.sleep(0.15)
+        waited += 0.15
+    return []
+
+
+async def _click_option(scope, choice: str) -> bool:
+    """Click the option whose text is exactly `choice`."""
+    menu = scope.locator(OPTION_SELECTOR)
+    try:
+        count = min(await menu.count(), 60)
+    except Exception:
+        return False
+    for i in range(count):
+        el = menu.nth(i)
+        try:
+            if not await el.is_visible():
+                continue
+            if ((await el.inner_text()) or "").strip() != choice:
+                continue
+            await el.scroll_into_view_if_needed(timeout=1500)
+            await el.click(timeout=2500)
             return True
-        await loc.press("Enter")
-        return True
+        except Exception:
+            continue
+    return False
+
+
+async def _fill_combobox(scope: Page | FrameLocator, selector: str, value: str) -> bool:
+    """
+    Drive a non-native dropdown and confirm the choice actually stuck.
+
+    The previous version clicked the first visible option whenever nothing
+    matched — which answers "Yes" to a question whose answer is "No" — and
+    returned success after a bare Enter without checking anything had been
+    selected. That is why fields reported as filled came back empty: the value
+    was typed into a react-select input but never committed.
+
+    Now: only an option the shared matcher actually chooses is clicked, and the
+    control is read back afterwards to confirm.
+    """
+    loc = _locator(scope, selector).first
+    try:
+        if not await loc.count():
+            return False
+        try:
+            await loc.click(timeout=2500)
+        except Exception:
+            control = loc.locator('xpath=ancestor::*[contains(@class,"select")][1]')
+            if await control.count():
+                await control.first.click(timeout=2500, force=True)
+            else:
+                return False
+        await asyncio.sleep(0.25)
+
+        # Try the open list before typing anything.
+        #
+        # Most questions on these forms are yes/no or a short enumeration, where
+        # the answer is already on screen. Typing into a react-select input can
+        # close its own menu, so filtering is a fallback for long lists (a
+        # country dropdown), not the default path.
+        options = await _open_options(scope)
+        choice = pick_option(options, value) if options else None
+        if choice:
+            if await _click_option(scope, choice):
+                await asyncio.sleep(0.3)
+                if await _committed(scope, selector, choice):
+                    return True
+                # A long list only renders the rows near the viewport, so the
+                # best visible option can be the wrong one — "British Indian
+                # Ocean Territory" for India, because "India +91" has not been
+                # scrolled into existence yet. Fall through and filter by typing
+                # rather than accept it.
+                logger.debug(
+                    f"Combobox {selector}: {choice!r} did not stick, filtering by text instead"
+                )
+                try:
+                    await loc.click(timeout=2000)
+                    await asyncio.sleep(0.2)
+                except Exception:
+                    pass
+
+        # Type to filter.
+        #
+        # Which element accepts the text depends on the widget: react-select
+        # (Greenhouse, Lever) makes the control itself an <input>, while Workday
+        # renders a separate search field inside the open listbox.
+        #
+        # Hunting for a search box page-wide is wrong and was: every combobox on
+        # a Greenhouse form matches the selector, so the text went into a
+        # different question's input and closed this dropdown.
+        typed_into = loc
+        try:
+            tag = (await loc.evaluate("el => el.tagName.toLowerCase()")) or ""
+        except Exception:
+            tag = ""
+        if tag not in {"input", "textarea"}:
+            search = scope.locator(SEARCH_BOX_SELECTOR)
+            try:
+                for i in range(min(await search.count(), 8)):
+                    box = search.nth(i)
+                    if await box.is_visible():
+                        typed_into = box
+                        break
+            except Exception:
+                typed_into = loc
+        try:
+            await typed_into.fill(value, timeout=1500)
+        except Exception:
+            try:
+                await typed_into.press_sequentially(value, delay=20, timeout=2000)
+            except Exception:
+                pass
+        await asyncio.sleep(0.35)
+
+        options = await _open_options(scope)
+        if not options:
+            logger.debug(f"Combobox {selector}: dropdown rendered no visible options")
+            await _dismiss_menu(scope)
+            return False
+
+        # One matcher for every surface — the same `pick_option` the extension
+        # and the resolver use, including its yes/no and decline handling.
+        choice = pick_option(options, value)
+        if not choice:
+            logger.debug(f"Combobox {selector}: no option matches {value!r} among {options[:6]}")
+            await _dismiss_menu(scope)
+            return False
+
+        if not await _click_option(scope, choice):
+            logger.debug(f"Combobox {selector}: option {choice!r} was not clickable")
+            await _dismiss_menu(scope)
+            return False
+
+        await asyncio.sleep(0.3)
+        ok = await _committed(scope, selector, choice)
+        if not ok:
+            logger.debug(f"Combobox {selector}: clicked {choice!r} but it did not stick")
+        return ok
     except Exception as exc:
         logger.debug(f"Combobox fill failed {selector}: {exc}")
         return False
+
+
+async def _dismiss_menu(scope) -> None:
+    try:
+        await scope.locator("body").press("Escape", timeout=1000)
+    except Exception:
+        pass
+
+
+async def _committed(scope, selector: str, choice: str) -> bool:
+    """
+    Did the control actually take the value?
+
+    Reporting a fill that did not happen is worse than reporting a failure: the
+    form is submitted with an empty required field, or the run claims success
+    on an application nobody completed.
+    """
+    # Compare on the meaningful core of the label. A picker's option reads
+    # "India +91" but the control afterwards shows only "India" or a flag and
+    # "+91", so matching the whole string reports a correct selection as failed.
+    want = (choice or "").strip().lower()
+    core = re.sub(r"[\(\[].*?[\)\]]", " ", want)
+    core = re.sub(r"[+\d]+\s*$", " ", core).strip()
+    want = core or want
+    if not want:
+        return False
+    try:
+        shown = await _locator(scope, selector).first.evaluate(
+            """el => {
+                 const parts = [el.value || ''];
+                 // react-select renders the committed choice in a sibling node,
+                 // never on the input. Walk up past the input's own wrapper —
+                 // el.closest('[class*="select"]') matches the input itself,
+                 // and an <input> has no innerText, so that reads as empty.
+                 let node = el.parentElement;
+                 for (let i = 0; i < 4 && node; i += 1) {
+                   const single = node.querySelector(
+                     '[class*="single-value"], [class*="multi-value"], [class*="selected"]');
+                   if (single) parts.push(single.innerText || '');
+                   if ((node.innerText || '').trim()) parts.push(node.innerText);
+                   node = node.parentElement;
+                 }
+                 return parts.join(' ').replace(/\\s+/g, ' ').trim();
+               }"""
+        )
+    except Exception:
+        return True          # cannot read it back; trust the click rather than retry blindly
+    return want[:24] in (shown or "").strip().lower()
 
 
 async def _check_if_needed(scope: Page | FrameLocator, selector: str, label: str, desired: str) -> bool:

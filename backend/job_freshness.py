@@ -14,4 +14,10 @@ INDEED_FROMAGE_DAYS = max(1, round(JOB_FRESHNESS_HOURS / 24))
 
 # Greenhouse / Lever / Workday posting age (hours). Missing dates are treated
 # as fresh; only dated-stale postings are dropped.
-CAREER_FRESHNESS_HOURS = 64
+#
+# Deliberately much wider than LinkedIn's window. A company board keeps a
+# requisition open for weeks, so a 64-hour cut discarded almost everything —
+# it is why direct boards contributed 10 jobs out of 177 while holding over a
+# thousand reachable roles. Re-applying is not a risk here: the seen ledger
+# blocks anything already acted on.
+CAREER_FRESHNESS_HOURS = 14 * 24

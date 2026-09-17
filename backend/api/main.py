@@ -25,6 +25,7 @@ from backend.platforms import DEFAULT_SCAN_PLATFORMS, SCAN_PLATFORMS, ALL_PLATFO
 from backend.applier.ats import detect_ats
 from backend.applier.profile import RESUMES_DIR, load_profile, save_profile
 from backend.api.autofill import router as autofill_router
+from backend.api.autopilot import router as autopilot_router
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
@@ -49,6 +50,7 @@ app.add_middleware(
 )
 
 app.include_router(autofill_router)
+app.include_router(autopilot_router)
 
 
 @app.on_event("startup")
