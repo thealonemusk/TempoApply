@@ -10,6 +10,9 @@ from playwright.async_api import Page
 
 from backend.applier.ats import detect_ats
 from backend.applier.creds import workday_credentials
+from backend.applier.workday_creds import (
+    credentials_for, mark_used, signup_url, tenant_of,
+)
 from backend.applier.fields import resolve_value
 from backend.applier.filler import (
     application_succeeded,
@@ -269,12 +272,29 @@ async def _switch_to_sign_in_tab(scope) -> None:
 
 
 async def ensure_signed_in(page: Page) -> bool:
-    email, password = workday_credentials()
+    # Every employer is a separate Workday tenant with its own account, so the
+    # login is looked up per tenant rather than using one global pair.
+    tenant = tenant_of(page.url)
+    email, password, source = credentials_for(page.url)
+
     if await _signed_in(page):
+        if tenant:
+            mark_used(tenant)
         return True
-    if not email or not password:
-        logger.error("Workday email/password missing from config/.env")
+
+    if source == "none":
+        logger.error(
+            f"No Workday login for tenant {tenant or '?'}. "
+            f"Register once at {signup_url(page.url)} and save it."
+        )
         return False
+    if source == "default":
+        # Worth trying — people reuse one email and password — but say so, or a
+        # failure here looks like a broken automation rather than a missing account.
+        logger.warning(
+            f"No account recorded for Workday tenant {tenant or '?'}; trying the "
+            f"default WORKDAY_EMAIL. If this fails, register at {signup_url(page.url)}."
+        )
 
     await _open_sign_in(page)
     if not await _login_form_visible(page):
@@ -291,6 +311,7 @@ async def ensure_signed_in(page: Page) -> bool:
     scope = await _auth_scope(page)
     await _switch_to_sign_in_tab(scope)
     scope = await _auth_scope(page)
+    _tenant_being_used = tenant
 
     email_loc = scope.locator(
         '[data-automation-id="email"], input[type="email"], input[autocomplete="username"]'

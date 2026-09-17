@@ -49,3 +49,6 @@ tools/
 resumes/tailored/
 backend/resume/testdata/*.pdf
 backend/resume/testdata/*.log
+
+# per-tenant Workday logins (plaintext, local only)
+config/workday_accounts.json

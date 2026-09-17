@@ -92,8 +92,21 @@ def classify(url: str, jd_text: str = "", company: str = "") -> Routing:
 
     # 2. Already pointing at an ATS that needs an account.
     if direct_ats in ACCOUNT_ATS:
+        # Every Workday employer is a separate tenant with its own account, so
+        # "can we sign in here" is a per-employer question. Without a recorded
+        # account the run would open a browser only to stall on a login, which
+        # is worse than routing it to the human queue up front.
+        from backend.applier.workday_creds import has_account, tenant_of
+
+        tenant = tenant_of(url)
+        if tenant and not has_account(tenant):
+            return Routing(
+                Route.MANUAL, url, direct_ats,
+                f"no {direct_ats} account recorded for {tenant} — register once, then this "
+                f"becomes automatic",
+            )
         return Routing(Route.LOGIN, url, direct_ats,
-                       f"{direct_ats} requires an account for this employer")
+                       f"{direct_ats} sign-in using the saved {tenant or 'tenant'} account")
     if any(marker in host for marker in ACCOUNT_HOSTS):
         return Routing(Route.LOGIN, url, direct_ats or "custom",
                        f"{host} requires a candidate account")

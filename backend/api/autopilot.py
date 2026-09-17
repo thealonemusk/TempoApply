@@ -303,3 +303,62 @@ def decide(job_id: str, req: DecisionRequest, db: Session = Depends(get_db)) -> 
         company=job.company or "", platform=job.platform or "", commit=True,
     )
     return {"success": True, "job_id": job_id, "status": job.status}
+
+
+# ── Workday accounts ─────────────────────────────────────────────────────────
+#
+# Every Workday employer is a separate tenant with its own login, so an account
+# has to be recorded per employer. Passwords are write-only through this API:
+# they go in, they are never read back out.
+
+class WorkdayAccountIn(BaseModel):
+    tenant: str
+    email: str
+    password: str
+    label: str = ""
+    note: str = ""
+
+
+@router.get("/workday/accounts")
+def workday_accounts(db: Session = Depends(get_db)) -> Dict[str, Any]:
+    """Recorded logins, plus the employers in your queue that still need one."""
+    from backend.applier.workday_creds import load_accounts, missing_tenants, signup_url
+
+    accounts = load_accounts()
+    urls = [
+        j.url for j in db.query(Job)
+        .filter(Job.url.like("%myworkday%"))
+        .filter(~Job.status.in_(["applied", "interviewing", "offer"]))
+        .all()
+    ]
+    missing = missing_tenants(urls)
+    by_tenant = {}
+    for url in urls:
+        from backend.applier.workday_creds import tenant_of
+        t = tenant_of(url)
+        if t in missing and t not in by_tenant:
+            by_tenant[t] = signup_url(url)
+
+    return {
+        "accounts": [a.redacted() for a in accounts.values()],
+        "missing": [{"tenant": t, "signup_url": by_tenant.get(t, "")} for t in missing],
+    }
+
+
+@router.post("/workday/accounts")
+def save_workday_account(req: WorkdayAccountIn) -> Dict[str, Any]:
+    from backend.applier.workday_creds import save_account
+
+    if not req.tenant.strip() or not req.email.strip() or not req.password:
+        raise HTTPException(status_code=400, detail="tenant, email and password are all required")
+    account = save_account(req.tenant, req.email, req.password, req.label, req.note)
+    return {"success": True, "account": account.redacted()}
+
+
+@router.delete("/workday/accounts/{tenant}")
+def delete_workday_account(tenant: str) -> Dict[str, Any]:
+    from backend.applier.workday_creds import delete_account
+
+    if not delete_account(tenant):
+        raise HTTPException(status_code=404, detail=f"No account recorded for {tenant}")
+    return {"success": True, "tenant": tenant}
