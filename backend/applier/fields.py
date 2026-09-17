@@ -150,11 +150,23 @@ def value_for_key(profile: ApplicantProfile, key: str, job_title: str = "", comp
 
 
 def custom_answer(profile: ApplicantProfile, label: str) -> str:
+    """
+    The most specific custom answer matching this label.
+
+    Longest needle wins, because several can match one question and dict order
+    is meaningless. "Are you subject to any employment agreements ... with your
+    current employer?" contains both "employment agreements" (-> No) and
+    "current employer" (-> Paytm); answering a yes/no legal question with an
+    employer name is the kind of mistake that reaches a real application.
+    """
     n = _norm(label)
+    best_answer = ""
+    best_len = 0
     for needle, answer in (profile.custom_answers or {}).items():
-        if _norm(needle) and _norm(needle) in n:
-            return str(answer)
-    return ""
+        needle_n = _norm(needle)
+        if needle_n and needle_n in n and len(needle_n) > best_len:
+            best_answer, best_len = str(answer), len(needle_n)
+    return best_answer
 
 
 def match_field_key(label: str) -> Optional[str]:

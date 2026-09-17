@@ -12,6 +12,7 @@ from sqlalchemy import or_
 
 from backend.applier.adapters import LOG_DIR, apply_on_page
 from backend.applier.ats import detect_ats
+from backend.applier.routing import Routing, needs_linkedin, route_job
 from backend.applier.control import clear_stop, should_stop
 from backend.applier.filler import screenshot_failure
 from backend.applier.linkedin_apply import ensure_linkedin_session
@@ -120,11 +121,20 @@ async def apply_one_job(
     profile: ApplicantProfile,
     resume,
     auto_submit: bool,
+    apply_url: str = "",
 ) -> Dict:
+    """
+    Apply to one job.
+
+    `apply_url` is the form the router resolved, which is not always `job.url`:
+    a LinkedIn listing that names a Greenhouse link in its description is
+    applied to at that link, not on LinkedIn.
+    """
+    target = apply_url or job.url
     try:
         return await apply_on_page(
             page=page,
-            url=job.url,
+            url=target,
             profile=profile,
             resume=resume,
             job_title=f"{job.title} ({job.location})" if job.location else job.title,
@@ -175,12 +185,45 @@ async def run_apply_pipeline(
             summary["message"] = "No eligible jobs to apply to"
             return summary
 
+        # Decide per job who applies — the bot or the human — before opening a
+        # browser. Previously every job was assumed to be a LinkedIn job, so a
+        # batch of Greenhouse forms stalled on a LinkedIn login it never needed.
+        plan: Dict[str, Routing] = {}
+        auto_jobs: List[Job] = []
         for job in jobs:
-            job.apply_status = "queued"
+            routing = route_job(job)
+            plan[job.id] = routing
             job.apply_error = ""
             if not job.ats_type:
-                job.ats_type = detect_ats(job.url)
+                job.ats_type = routing.ats or detect_ats(job.url)
+            if routing.is_auto:
+                job.apply_status = "queued"
+                auto_jobs.append(job)
+            else:
+                # Not a failure — work for the review queue, applied through the
+                # extension. Recorded so the dashboard can list it.
+                job.apply_status = "manual_queue"
+                job.apply_error = routing.reason
+                summary["manual_queue"] = summary.get("manual_queue", 0) + 1
+                summary["results"].append({
+                    "job_id": job.id,
+                    "title": job.title,
+                    "company": job.company,
+                    "status": "manual_queue",
+                    "message": routing.reason,
+                    "ats": routing.ats,
+                    "apply_url": routing.apply_url,
+                })
         db.commit()
+
+        if not auto_jobs:
+            summary["message"] = (
+                f"No job in this batch can be applied to automatically. "
+                f"{summary.get('manual_queue', 0)} queued for manual apply."
+            )
+            return summary
+
+        jobs = auto_jobs
 
         async with async_playwright() as playwright:
             browser, context = await create_browser_context(playwright, headless=headless)
@@ -191,17 +234,21 @@ async def run_apply_pipeline(
                     _skip_unfinished(db, jobs, summary)
                     return summary
                 resume = await ensure_resume_pdf(page, profile)
-                signed_in = await ensure_linkedin_session(page)
                 if not resume:
                     return {**summary, "error": "Could not create or find a resume PDF"}
                 if should_stop():
                     _skip_unfinished(db, jobs, summary)
                     return summary
-                if not signed_in:
-                    return {
-                        **summary,
-                        "error": "LinkedIn not signed in. Use the TempoApply Chrome window, then retry.",
-                    }
+
+                # Only sign in to LinkedIn if something in this batch is
+                # actually hosted there. A Greenhouse-only run must never be
+                # blocked by an unrelated login.
+                if needs_linkedin([plan[j.id] for j in jobs]):
+                    if not await ensure_linkedin_session(page):
+                        return {
+                            **summary,
+                            "error": "LinkedIn not signed in. Use the TempoApply Chrome window, then retry.",
+                        }
 
                 for i, job in enumerate(jobs):
                     if should_stop():
@@ -214,7 +261,10 @@ async def run_apply_pipeline(
                     db.commit()
 
                     page = await _reuse_page(context)
-                    result = await apply_one_job(page, fresh, profile, resume, auto_submit)
+                    result = await apply_one_job(
+                        page, fresh, profile, resume, auto_submit,
+                        apply_url=plan[fresh.id].apply_url,
+                    )
                     await _close_extra_pages(context, page)
 
                     _record_result(db, fresh, result)

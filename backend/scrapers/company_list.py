@@ -14,9 +14,7 @@ Board IDs verified against live APIs (404 / wrong-company entries removed).
 # Shared India location keywords used across companies
 INDIA_LOCS = [
     "india", "bangalore", "bengaluru", "hyderabad", "pune", "mumbai",
-    "delhi", "noida", "gurgaon", "gurugram", "chennai", "remote - india",
-    "kolkata", "ahmedabad", "jaipur", "coimbatore", "kochi", "trivandrum",
-    "thiruvananthapuram", "indore", "chandigarh", "remote, india", "in - ",
+    "delhi", "noida", "gurgaon", "gurugram", "remote - india","remote, india", "in - ",
 ]
 
 TOP_COMPANIES = [
@@ -111,24 +109,16 @@ TOP_COMPANIES = [
         "api_id": "groww",
         "location_filter": INDIA_LOCS,
     },
-    {
-        "name": "Postman",
-        "type": "greenhouse",
-        "api_id": "postman",
-        "location_filter": INDIA_LOCS,
-    },
+    {"name": "Postman", "type": "skip", "api_id": "postman",
+     "reason": "Greenhouse board returns 404 (verified 2026-09-17)"},
     {
         "name": "InMobi",
         "type": "greenhouse",
         "api_id": "inmobi",
         "location_filter": INDIA_LOCS,
     },
-    {
-        "name": "PhonePe",
-        "type": "greenhouse",
-        "api_id": "phonepe",
-        "location_filter": INDIA_LOCS,
-    },
+    {"name": "PhonePe", "type": "skip", "api_id": "phonepe",
+     "reason": "Greenhouse board returns 404 (verified 2026-09-17)"},
     {
         "name": "HackerRank",
         "type": "greenhouse",
@@ -542,12 +532,6 @@ TOP_COMPANIES = [
         "location_filter": INDIA_LOCS,
     },
     {
-        "name": "Paytm",
-        "type": "custom",
-        "careers_url": "https://paytm.com/careers#jobs",
-        "location_filter": INDIA_LOCS,
-    },
-    {
         "name": "Zomato",
         "type": "custom",
         "careers_url": "https://www.zomato.com/careers",
@@ -569,30 +553,6 @@ TOP_COMPANIES = [
         "name": "OYO Rooms",
         "type": "custom",
         "careers_url": "https://www.oyorooms.com/careers/",
-        "location_filter": INDIA_LOCS,
-    },
-    {
-        "name": "Byju's",
-        "type": "custom",
-        "careers_url": "https://byjus.com/careers/",
-        "location_filter": INDIA_LOCS,
-    },
-    {
-        "name": "Infosys",
-        "type": "custom",
-        "careers_url": "https://career.infosys.com/joblist",
-        "location_filter": INDIA_LOCS,
-    },
-    {
-        "name": "Wipro",
-        "type": "custom",
-        "careers_url": "https://careers.wipro.com/careers-home/jobs?page=1&location=India",
-        "location_filter": INDIA_LOCS,
-    },
-    {
-        "name": "HCL Technologies",
-        "type": "custom",
-        "careers_url": "https://www.hcltech.com/careers/jobs?location=India",
         "location_filter": INDIA_LOCS,
     },
 
