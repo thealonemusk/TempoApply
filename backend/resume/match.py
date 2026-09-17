@@ -71,11 +71,34 @@ STOPWORDS: Set[str] = {
 }
 
 
+# Job descriptions arrive from the scrapers with markup residue in them — the
+# LinkedIn guest API returns escaped HTML. Left in, "div", "nbsp" and "href"
+# rank as some of the employer's most frequent words.
+_HTML_TAG_RE = re.compile(r"<[^>]{0,200}>")
+_HTML_ENTITY_RE = re.compile(r"&(?:[a-z]{2,10}|#\d{1,5}|#x[0-9a-f]{1,4});", re.I)
+_MARKUP_WORDS = {
+    "div", "span", "href", "nbsp", "amp", "quot", "apos", "lt", "gt", "br",
+    "ul", "li", "ol", "strong", "em", "class", "style", "rel", "nofollow",
+    "target", "blank", "http", "https", "www", "com", "html", "utm",
+}
+
+# Markup residue must never surface as a "keyword the employer used". This only
+# affects the frequency list; TECH_VOCAB matching is unaffected, so a genuine
+# mention of HTTPS in a resume still counts as a technology.
+STOPWORDS |= _MARKUP_WORDS
+
+
+def strip_markup(text: str) -> str:
+    """Remove HTML tags and entities left behind by the scrapers."""
+    text = _HTML_TAG_RE.sub(" ", text or "")
+    return _HTML_ENTITY_RE.sub(" ", text)
+
+
 def normalise(text: str) -> str:
     """Lowercase, collapse whitespace, and undo PDF ligature glyphs."""
     from backend.resume.texdoc import normalise_ligatures
 
-    text = normalise_ligatures(text or "")
+    text = normalise_ligatures(strip_markup(text or ""))
     text = text.replace("−", "-").replace("–", "-").replace("—", "-")
     text = text.replace("˜", "~").replace("’", "'")
     return re.sub(r"\s+", " ", text).strip().lower()

@@ -165,7 +165,10 @@ def _propose_rewrites(
     if not editable:
         return {}, "no editable bullets found"
     if not llm.is_available():
-        return {}, "no API key — reordering and trimming only"
+        # Bullets are spliced back at their original offsets, so nothing is
+        # re-ordered here — without a key the run still compiles, audits, trims
+        # to one page and reports the keyword gap, but the wording is untouched.
+        return {}, "no API key — compiled, audited and trimmed, but not reworded"
 
     prompt = REWRITE_TEMPLATE.format(
         job_title=spec.job_title or "(not given)",

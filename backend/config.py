@@ -55,6 +55,10 @@ class Settings(BaseSettings):
 
     # Resume tailoring
     openai_model: str = "gpt-5.4"
+    # Any OpenAI-compatible endpoint: a proxy, a gateway, or a local runtime
+    # such as Ollama (http://localhost:11434/v1). Blank means api.openai.com.
+    openai_base_url: str = ""
+    gemini_model: str = "gemini-2.0-flash"
     tectonic_path: str = ""                  # blank -> tools/tectonic.exe, then PATH
     master_resume_path: str = "resumes/master_resume.tex"
 

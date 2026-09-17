@@ -48,18 +48,27 @@ def is_available() -> bool:
     return True
 
 
+def base_url() -> str:
+    """Where to send requests. Blank means OpenAI's own endpoint."""
+    return (getattr(settings, "openai_base_url", "") or "").strip().rstrip("/")
+
+
 def _client():
     key = api_key()
     if not key:
         raise LLMUnavailable(
-            "No OpenAI key. Set gpt_key in config/.env "
+            "No API key. Set gpt_key in config/.env "
             "(GEMINI_API_KEY in this project is a placeholder and does not work)."
         )
     try:
         from openai import OpenAI
     except ImportError as exc:  # pragma: no cover - environment dependent
         raise LLMUnavailable("The openai package is not installed — pip install openai") from exc
-    return OpenAI(api_key=key)
+
+    # A base URL lets any OpenAI-compatible provider serve this: a gateway, a
+    # proxy, or a local runtime like Ollama, which needs no key and no account.
+    url = base_url()
+    return OpenAI(api_key=key, base_url=url) if url else OpenAI(api_key=key)
 
 
 def ask_json(
