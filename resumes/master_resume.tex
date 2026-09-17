@@ -1,0 +1,204 @@
+\documentclass[letterpaper,10pt]{article}
+
+\usepackage[margin=0.4in]{geometry}
+\usepackage{titlesec}
+\usepackage[usenames,dvipsnames]{color}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\usepackage{fancyhdr}
+\usepackage[english]{babel}
+\usepackage{tabularx}
+\input{glyphtounicode}
+
+%----------PAGE SETUP----------
+\pagestyle{fancy}
+\fancyhf{}
+\fancyfoot{}
+\renewcommand{\headrulewidth}{0pt}
+\renewcommand{\footrulewidth}{0pt}
+
+\urlstyle{same}
+\raggedbottom
+\raggedright
+\setlength{\tabcolsep}{0in}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    urlcolor=blue
+}
+
+\pdfgentounicode=1
+
+%----------SECTION FORMATTING----------
+\titleformat{\section}
+  {\vspace{-2pt}\scshape\raggedright\large}
+  {}{0em}{}
+  [\color{black}\titlerule \vspace{-6pt}]
+
+%----------CUSTOM COMMANDS----------
+\newcommand{\resumeItem}[1]{
+    \item\small{#1 \vspace{-2pt}}
+}
+
+\newcommand{\resumeSubheading}[4]{
+    \vspace{-2pt}\item
+    \begin{tabular*}{0.97\textwidth}[t]
+        {l@{\extracolsep{\fill}}r}
+        \textbf{#1} & #2 \\
+        \textit{\small #3} & \textit{\small #4} \\
+    \end{tabular*}
+    \vspace{-7pt}
+}
+
+\newcommand{\resumeProjectHeading}[2]{
+    \item
+    \begin{tabular*}{0.97\textwidth}
+        {l@{\extracolsep{\fill}}r}
+        \small #1 & #2 \\
+    \end{tabular*}
+    \vspace{-7pt}
+}
+
+\newcommand{\resumeSubHeadingListStart}{
+    \begin{itemize}[leftmargin=0.15in, label={}]
+}
+
+\newcommand{\resumeSubHeadingListEnd}{
+    \end{itemize}
+}
+
+\newcommand{\resumeItemListStart}{
+    \begin{itemize}[leftmargin=0.18in]
+}
+
+\newcommand{\resumeItemListEnd}{
+    \end{itemize}\vspace{-6pt}
+}
+
+% ---------- Document ----------
+\begin{document}
+
+% ---------- Header ----------
+\begin{center}
+    {\fontsize{17}{19}\selectfont\textbf{Ashutosh Jha}}\\[-1pt]
+    \small
+    Noida, India \,|\, +91 9939964663 \,|\,
+    \href{mailto:ashutosh.jha.cs@gmail.com}{ashutosh.jha.cs@gmail.com}
+    \\[-1pt]
+    \href{https://linkedin.com/in/thealonemusk}{LinkedIn}
+    \,|\,
+    \href{https://github.com/thealonemusk}{GitHub}
+    \,|\,
+    \href{https://codeforces.com/profile/thealonemusk}{Codeforces}
+\end{center}
+
+\vspace{-7pt}
+
+% ---------- Summary ----------
+\section{Summary}
+\small
+Backend / distributed-systems engineer with production ownership of device-to-cloud payment infrastructure at Paytm. Built and operated fleet infrastructure spanning IoT connectivity, zero-downtime migrations, CI/CD and OTA releases, and production LLM-agent tooling. Strong foundations in Java, C/C++, Python, networking, concurrency, storage systems, databases, and algorithms.
+
+% ---------- Experience ----------
+\section{Experience}
+\begin{itemize}[label={},leftmargin=0pt]
+
+  \resumeSubheading
+    {Paytm}{Jan 2025 -- Present}
+    {Software Engineer}{Noida, India}
+
+  \begin{itemize}
+    \resumeItem{Owned Indonesia IoT launch end-to-end, moving device connectivity to TLS over HTTPS/MQTTS, validating certificate compatibility, handling regional timezones and transaction formatting; sole production owner for the market and its Java IoT backend services.}
+
+    \resumeItem{Led migration of the entire deployed device fleet to new backend hosts/endpoints, staging rollout by hardware family while maintaining zero downtime for live transaction traffic.}
+
+    \resumeItem{Owned CI/CD and OTA release path for 18 device types, including Jenkins builds, delta updates, canary rollouts and post-release monitoring; fixed a delta-update failure blocking production distribution.}
+
+    \resumeItem{Designed fleet telemetry covering battery, transaction counters, cell ID, keep-alive and free-heap deltas with randomized request timing; fixed a messaging-client memory leak and use-after-free, and reduced 3--8s latency under concurrent downloads.}
+
+    \resumeItem{Built a Python + Slack LLM-agent orchestration system (\textasciitilde1,500 LOC) routing tickets to autonomous coding agents and production repositories; enabled 45 production changes through automated PR workflows.}
+  \end{itemize}
+
+  \resumeSubheading
+    {Denr Financial Services}{Mar 2024 -- Jun 2024}
+    {Software Developer Intern}{Remote}
+
+  \begin{itemize}
+    \resumeItem{Built backend services using AWS Lambda, Cognito and S3 for authentication, API processing and cloud storage.}
+
+    \resumeItem{Improved API response times by 40\% through asynchronous processing and caching.}
+
+    \resumeItem{Developed and integrated REST/JSON APIs while working in an Agile development workflow.}
+  \end{itemize}
+
+\end{itemize}
+
+% ---------- Projects ----------
+\section{Projects}
+\resumeSubHeadingListStart
+
+  \resumeProjectHeading
+    {\textbf{\href{https://github.com/thealonemusk/ThrottleX}{\underline{ThrottleX}}} $-$ API Rate Limiting Service}
+    {\textit{Java 17, Spring Boot 3.2, JPA, MySQL, Docker}}
+
+  \resumeItemListStart
+    \resumeItem{Built a Spring Boot rate-limiting service supporting Token Bucket and Sliding Window algorithms behind a common \texttt{Limiter} interface.}
+
+    \resumeItem{Implemented transactional MySQL persistence with JPA/Hibernate, pessimistic locking, indexed request logs and per-IP/user/route policies.}
+
+    \resumeItem{Exposed a 9-endpoint admin API for policy management and packaged the service with Docker.}
+  \resumeItemListEnd
+
+  \resumeProjectHeading
+    {\textbf{\href{https://github.com/thealonemusk/OktaDB}{\underline{OktaDB}}} $-$ Embedded Storage Engine}
+    {\textit{C, B+Tree, WAL, File Systems}}
+
+  \resumeItemListStart
+    \resumeItem{Built a persistent C key-value storage engine from scratch with a custom 4KB paged binary format and file-backed pager, using no external libraries.}
+
+    \resumeItem{Implemented a B+Tree with node splitting and $O(\log n)$ lookups for indexed key-value access.}
+
+    \resumeItem{Added write-ahead logging for crash recovery, page compaction and unit tests for storage correctness.}
+  \resumeItemListEnd
+
+  \resumeProjectHeading
+    {\textbf{\href{https://github.com/thealonemusk/DriftBench}{\underline{DriftBench}}} $-$ LLM Coding-Agent Evaluation Harness}
+    {\textit{Python, pytest}}
+
+  \resumeItemListStart
+    \resumeItem{Built a deterministic evaluation harness running 30 sequential coding tickets against an evolving codebase to measure agent reliability.}
+
+    \resumeItem{Designed 14 hidden invariants and probes to detect regressions, state drift and incorrect agent behavior.}
+
+    \resumeItem{Measured retrieval recall degradation from 90\% to 25\% in a 2x2 ablation against a sliding-window baseline.}
+  \resumeItemListEnd
+
+\resumeSubHeadingListEnd
+
+% ---------- Skills ----------
+\section{Technical Skills}
+\small
+\textbf{Languages:} C, C++, Java, Python, SQL, JavaScript/TypeScript \\
+\textbf{Backend:} REST APIs, Microservices, Spring Boot, Node.js, JPA/Hibernate, JSON, JUnit, Event-Driven Architecture \\
+\textbf{Systems:} Networking, Concurrency, MQTT/MQTTS, TLS/Certificate Rotation, Rate Limiting, Caching, Retry/Backoff, WAL, Indexing \\
+\textbf{AI/LLM:} LLM Agent Orchestration, Agent Evaluation, MCP \\
+\textbf{Infrastructure:} AWS (EC2, S3, EKS, Lambda, IoT Core), Docker, Kubernetes, Linux, Jenkins CI/CD, Canary/Staged Rollouts, OTA/Delta Updates, RTOS Firmware, Kibana \\
+\textbf{Databases:} MySQL, PostgreSQL, Redis, MongoDB,
+
+% ---------- Education ----------
+\section{Education}
+\begin{itemize}[label={},leftmargin=0pt]
+  \resumeSubheading
+    {National Institute of Technology, Jalandhar}{Nov 2021 -- Jul 2025}
+    {B.Tech in Computer Science and Engineering, CGPA: 7.79/10}{Jalandhar, India}
+\end{itemize}
+
+% ---------- Achievements ----------
+\section{Achievements \& Competitive Programming}
+\begin{itemize}[leftmargin=14pt,itemsep=0.5pt,topsep=1pt]
+    \resumeItem{Codeforces Expert, peak rating 1676; ranked 109/40,000+ in Educational Codeforces Round 186 (Div. 2).}
+    \resumeItem{Solved 1200+ algorithmic problems across Codeforces, LeetCode and GeeksforGeeks; LeetCode rating 1669.}
+\end{itemize}
+
+\end{document}

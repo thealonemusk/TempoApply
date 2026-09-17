@@ -53,6 +53,11 @@ class Settings(BaseSettings):
     min_relevance_score: int = 55
     excluded_companies: str = ""
 
+    # Resume tailoring
+    openai_model: str = "gpt-5.4"
+    tectonic_path: str = ""                  # blank -> tools/tectonic.exe, then PATH
+    master_resume_path: str = "resumes/master_resume.tex"
+
     # App
     base_resume_path: str = "resumes/base_resume.tex"
     database_url: str = "sqlite:///./tempoapply.db"

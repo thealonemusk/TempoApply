@@ -43,3 +43,9 @@ data/apply_logs/*.png
 resumes/*.pdf
 resumes/*.doc
 resumes/*.docx
+
+# resume tailoring
+tools/
+resumes/tailored/
+backend/resume/testdata/*.pdf
+backend/resume/testdata/*.log
