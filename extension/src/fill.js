@@ -333,18 +333,42 @@
   }
 
   /** The Add / Add Another button that belongs to this section. */
-  function addButtonFor(spec) {
-    const container =
-      document.querySelector(spec.section) ||
+  /** The accessible name of a control, however the page chose to provide it. */
+  function buttonName(el) {
+    const aria = el.getAttribute("aria-label") || "";
+    const auto = el.getAttribute("data-automation-id") || "";
+    return norm([el.innerText, aria, auto].filter(Boolean).join(" "));
+  }
+
+  function sectionContainer(spec) {
+    // An entry id like workExperience-1 also matches a loose *="workExperience"
+    // selector, so a naive querySelector can return a single entry and the Add
+    // button search is then scoped inside it, where no Add button exists.
+    const candidates = Array.from(document.querySelectorAll(spec.section))
+      .filter((node) => !node.matches(spec.entry));
+    if (candidates.length) {
+      // Outermost wins, so the section is not confused with a panel inside it.
+      return candidates.reduce((a, b) => (a.contains(b) ? a : b));
+    }
+    return (
       Array.from(document.querySelectorAll("section, div, fieldset")).find((node) => {
         const head = node.querySelector("h2, h3, h4, legend, [role='heading']");
         return head && spec.heading.test(head.innerText || "");
-      });
-    const scope = container || document;
-    const buttons = Array.from(scope.querySelectorAll('button, [role="button"], a[role="button"]'));
+      }) || null
+    );
+  }
+
+  function addButtonFor(spec) {
+    const scope = sectionContainer(spec) || document;
+    const buttons = Array.from(
+      scope.querySelectorAll(
+        'button, [role="button"], a[role="button"], [data-automation-id="Add"]'
+      )
+    ).filter(isVisible);
+    // Exact match first, so "Add Another" wins over an unrelated "Add to list".
     return (
-      buttons.find((b) => isVisible(b) && /^add(\s+another)?$/i.test(norm(b.innerText))) ||
-      buttons.find((b) => isVisible(b) && /^add/i.test(norm(b.innerText))) ||
+      buttons.find((b) => /^add( another)?$/.test(buttonName(b))) ||
+      buttons.find((b) => /(^| )add( |$)/.test(buttonName(b))) ||
       null
     );
   }

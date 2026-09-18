@@ -248,6 +248,58 @@
     return { kind: "", index: 0 };
   }
 
+  // Field names that only ever occur inside a repeating block. Used to recover
+  // the entry when the container ids are not the ones we know about — real
+  // Workday tenants do not all use `workExperience-1`, and an untagged field
+  // falls through to the flat resolver, which has no answer for a bare
+  // "Company" or "Role Description" and so leaves them empty.
+  const REPEATING_LABELS = [
+    [/^job\s*title$/i, "experience"],
+    [/^company$/i, "experience"],
+    [/^role\s*description$/i, "experience"],
+    [/^(work\s*)?location$/i, "experience"],
+    [/^from$/i, "experience"],
+    [/^to$/i, "experience"],
+    [/currently\s+work\s+here/i, "experience"],
+    [/^school(\s+or\s+university)?$/i, "education"],
+    [/^degree$/i, "education"],
+    [/^field\s*of\s*study$/i, "education"],
+    [/^overall\s+result/i, "education"],
+    [/^url$/i, "website"],
+    [/^website$/i, "website"],
+  ];
+
+  function repeatingKind(label) {
+    const text = clean(label);
+    for (const [pattern, kind] of REPEATING_LABELS) {
+      if (pattern.test(text)) return kind;
+    }
+    return "";
+  }
+
+  /**
+   * Give untagged fields an entry number from their order on the page.
+   *
+   * Two "Company" boxes down the page are employer 1 and employer 2 — that
+   * holds however the tenant names its containers, so it recovers the mapping
+   * when the id patterns miss.
+   */
+  function inferSectionsByOrder(fields) {
+    const counts = new Map();          // "experience|company" -> how many seen
+    for (const field of fields) {
+      if (field.section_kind) continue;
+      const label = field.group_label || field.label || "";
+      const kind = repeatingKind(label);
+      if (!kind) continue;
+      const key = `${kind}|${clean(label).toLowerCase()}`;
+      const seen = (counts.get(key) || 0) + 1;
+      counts.set(key, seen);
+      field.section_kind = kind;
+      field.section_index = seen;
+    }
+    return fields;
+  }
+
   function selectorFor(el) {
     const auto = el.getAttribute("data-automation-id");
     if (auto) return `[data-automation-id="${auto}"]`;
@@ -367,6 +419,9 @@
       }
       push(el, describeNative);
     }
+
+    // Recover repeating-entry membership for anything the container ids missed.
+    inferSectionsByOrder(fields);
 
     return { fields, elements };
   };

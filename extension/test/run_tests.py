@@ -249,6 +249,88 @@ async def run_sections() -> None:
         await browser.close()
 
 
+# ── Repeating entries with unrecognisable container ids ──────────────────────
+
+UNKNOWN_IDS_HTML = """
+<h3>Work Experience</h3>
+<div data-automation-id="panelSet-abc-1">
+  <label for="t1">Job Title</label><input id="t1">
+  <label for="c1">Company</label><input id="c1">
+  <label for="d1">Role Description</label><textarea id="d1"></textarea>
+</div>
+<div data-automation-id="panelSet-abc-2">
+  <label for="t2">Job Title</label><input id="t2">
+  <label for="c2">Company</label><input id="c2">
+  <label for="d2">Role Description</label><textarea id="d2"></textarea>
+</div>
+<h3>Websites</h3>
+<div data-automation-id="panelSet-xyz-1"><label for="u1">URL</label><input id="u1"></div>
+<div data-automation-id="panelSet-xyz-2"><label for="u2">URL</label><input id="u2"></div>
+"""
+
+
+async def run_unknown_containers() -> None:
+    """
+    The real failure: a tenant whose entry containers are not named
+    workExperience-1. Untagged fields fall through to the flat resolver, which
+    has no alias for a bare "Company" or "Role Description", so they stay empty.
+    Entry membership has to be recoverable from repetition order alone.
+    """
+    from fastapi.testclient import TestClient
+    from playwright.async_api import async_playwright
+
+    from backend.api.main import app
+
+    client = TestClient(app)
+    print("\nRepeating entries when the container ids are unknown")
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        page = await browser.new_page()
+        await page.set_content(UNKNOWN_IDS_HTML)
+        await page.add_script_tag(path=str(EXT / "src" / "scrape.js"))
+        fields = await page.evaluate("() => window.__TA.scrape().fields")
+
+        def tagged(label, index):
+            return next(
+                (f for f in fields
+                 if f["label"].strip().lower() == label.lower()
+                 and f.get("section_index") == index),
+                None,
+            )
+
+        check("first Company is entry 1", bool(tagged("Company", 1)), True)
+        check("second Company is entry 2", bool(tagged("Company", 2)), True)
+        check("first Role Description is entry 1", bool(tagged("Role Description", 1)), True)
+        check("second Role Description is entry 2", bool(tagged("Role Description", 2)), True)
+        check("Company tagged as experience",
+              (tagged("Company", 1) or {}).get("section_kind"), "experience")
+        check("URL tagged as website", (tagged("URL", 1) or {}).get("section_kind"), "website")
+        check("second URL is entry 2", bool(tagged("URL", 2)), True)
+
+        data = client.post("/api/autofill/resolve", json={
+            "url": "https://acme.wd5.myworkdayjobs.com/x/apply",
+            "page_title": "My Experience", "fields": fields,
+        }).json()
+        values = {f["label"]: f["value"] for f in data["fills"] if f["action"] != "skip"}
+        filled = [f for f in data["fills"] if f["action"] != "skip"]
+
+        # 2 entries x (Job Title, Company, Role Description) + 2 URLs
+        check("every field resolved", len(filled), 8)
+        by_idx = {}
+        for f in data["fills"]:
+            if f["action"] != "skip" and f["key"]:
+                by_idx[f["key"]] = by_idx.get(f["key"], 0) + 1
+        check("employer 1 is Paytm",
+              any(f["value"] == "Paytm" for f in filled), True)
+        check("employer 2 is the internship",
+              any("Denr" in f["value"] for f in filled), True)
+        check("websites are three different links",
+              len({f["value"] for f in filled if f["value"].startswith("http")}), 2)
+
+        await browser.close()
+
+
 # ── Integration: the real extension in Chrome ────────────────────────────────
 
 def _serve(directory: Path):
@@ -331,6 +413,7 @@ async def run_integration() -> None:
 async def main() -> None:
     await run_unit()
     await run_sections()
+    await run_unknown_containers()
     if "--integration" in sys.argv:
         await run_integration()
 
