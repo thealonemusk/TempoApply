@@ -88,10 +88,36 @@ python extension/test/run_tests.py                # headless, no install needed
 python extension/test/run_tests.py --integration  # real extension in Chrome
 ```
 
+## Autopilot
+
+Selects the best N openings, tailors a resume to each, fills the application and
+stops for review. It never submits — a mis-parsed field reaching a real employer
+cannot be recalled.
+
+Jobs are routed before a browser opens (`backend/applier/routing.py`):
+
+| Route | Meaning |
+| --- | --- |
+| `auto` | public ATS form (Greenhouse, Lever, Ashby) — filled by the bot |
+| `login` | needs an account for that employer — uses the stored Workday login |
+| `manual` | LinkedIn and anything with no reachable form — applied by hand |
+
+UI lives at `/autopilot`, in its own route group so it cannot disturb the
+existing dashboard pages.
+
+```bash
+python scripts/audit.py            # repo health: imports, deps, wiring, secrets
+python scripts/verify_boards.py    # which company boards are still alive
+python scripts/workday_login.py    # per-employer Workday logins
+python scripts/check_ai_key.py     # is the tailoring key usable
+```
+
 ## Features
 
 - Hard experience boundary (<2 years) and senior title exclusion
 - Multi-platform parallel scraping via registry
 - Apple-inspired dashboard with light/dark mode
 - Assisted autofill on any job portal via the browser extension
+- Job-specific resume tailoring, compiled from your own LaTeX
+- Autopilot: select, tailor, fill, review
 - Manual job add, status tracking, analytics

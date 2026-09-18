@@ -8,6 +8,17 @@ to the TempoApply backend, and writes back the values it gets — so the answers
 come from the same `backend/applier/fields.py` resolver that drives the headless
 auto-apply. Tune an alias or a custom answer once and both paths improve.
 
+## LinkedIn is excluded on purpose
+
+The content script does not run on `linkedin.com`. LinkedIn probes for ~2,953
+named browser extensions, job-application tools among them, and the one
+documented *permanent* restriction tied to such a tool belonged to someone
+applying by hand with the extension merely installed. Scripts driving a normal
+browser are not on that list; extensions are the detectable surface.
+
+Since LinkedIn jobs route to manual apply anyway, the only cost is autofill on
+Easy Apply. To re-enable it, delete `exclude_matches` from `manifest.json`.
+
 ## Install
 
 1. Start the backend: `python run.py` (the extension needs `localhost:8000`).
@@ -85,6 +96,22 @@ To fields blank.
 The **Skills** picker takes values one at a time rather than one comma-joined
 string, and only plain taxonomy names are offered — a compound entry like
 `TLS/Certificate Rotation` would never match a Workday skill.
+
+### Repeating entries when the ids are unfamiliar
+
+Entry membership is read from the container id (`workExperience-1`,
+`education-2`, `websitePanelSet-3`) where that works. Not every Workday tenant
+uses those names, and an untagged field falls through to the flat resolver,
+which has no answer for a bare "Company" or "Role Description" — so those boxes
+stay empty.
+
+The fallback is repetition order: the first "Company" on the page is employer 1,
+the second is employer 2, and the same for "URL". That holds whatever the tenant
+calls its containers.
+
+If something still will not fill, paste `test/diagnose-workday.js` into the
+DevTools console on that step. It is read-only and reports the real ids, the Add
+buttons, and every control with the label the scraper derives.
 
 ### Bot traps
 

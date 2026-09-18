@@ -12,3 +12,8 @@ beautifulsoup4>=4.12.0
 lxml>=5.0.0
 loguru>=0.7.0
 requests>=2.31.0
+
+# resume tailoring
+openai>=1.40.0         # resume tailoring (backend/resume/llm.py)
+PyMuPDF>=1.24.0        # PDF text extraction and the ATS audit (backend/resume/compile.py)
+pylatexenc>=2.10       # LaTeX text handling
