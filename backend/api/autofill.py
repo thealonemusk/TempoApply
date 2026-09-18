@@ -24,10 +24,12 @@ from sqlalchemy.orm import Session
 from backend import seen_ledger
 from backend.applier.ats import detect_ats
 from backend.applier.fields import (
+    OPTION_FALLBACKS,
     is_consent_label,
     is_skip_field,
     match_field_key,
     pick_option,
+    pick_option_for_key,
     resolve_value,
 )
 from backend.applier.profile import ApplicantProfile, load_profile
@@ -173,10 +175,15 @@ def _phone_value(profile: ApplicantProfile, field: ScrapedField, desired: str) -
         return ""
     if desired and desired not in {profile.phone, profile.phone_e164()}:
         return desired
-    # A widget that already shows a +91 prefix wants the national number only.
-    if (field.value or "").strip().startswith("+") or "+91" in (field.placeholder or ""):
-        return profile.phone_national()
-    return profile.phone_e164() or profile.phone_national()
+    # The national number is the safe default. Every portal that wants a phone
+    # number also asks for the country separately — Workday has a whole
+    # "Country Phone Code" field — and a "+91" typed into the number box on top
+    # of that is either rejected by validation or submitted as +91+91.
+    # A widget that genuinely wants E.164 says so in its placeholder.
+    placeholder = (field.placeholder or "").strip()
+    if placeholder.startswith("+") and "+91" not in placeholder:
+        return profile.phone_e164() or profile.phone_national()
+    return profile.phone_national() or profile.phone_e164()
 
 
 def _is_resume_input(field: ScrapedField) -> bool:
@@ -201,6 +208,22 @@ def _is_skill_multiselect(field: ScrapedField, label: str) -> bool:
     )
 
 
+def _option_candidates(key: str, desired: str) -> List[str]:
+    """
+    Acceptable answers for a widget, best first.
+
+    Workday's dropdowns are not `<select>`, so their options do not exist in
+    the DOM until the listbox is opened — the backend cannot see them and the
+    match has to happen in the extension. Sending the fallbacks along is what
+    lets a tenant offering only "Phone"/"Main" still answer Phone Device Type.
+    """
+    out = [desired] if desired else []
+    for alternative in OPTION_FALLBACKS.get(key, ()):
+        if alternative.lower() not in {v.lower() for v in out}:
+            out.append(alternative)
+    return out
+
+
 def _emit(field: ScrapedField, base: dict, desired: str, key: str, ftype: str) -> Fill:
     """Turn a resolved value into the action this particular widget needs."""
     if ftype == "checkbox":
@@ -211,14 +234,15 @@ def _emit(field: ScrapedField, base: dict, desired: str, key: str, ftype: str) -
         return Fill(**base, action="checkbox", value="Yes", key=key)
 
     if field.tag == "select" or field.options:
-        choice = pick_option(field.options, desired)
+        choice = pick_option_for_key(field.options, desired, key)
         if not choice:
             return Fill(**base, action="skip", value=desired, options=field.options,
                         confidence="low", reason="no matching option")
         return Fill(**base, action="select", value=choice, options=field.options, key=key)
 
     if field.role == "combobox" or field.tag not in {"input", "textarea"}:
-        return Fill(**base, action="combobox", value=desired, key=key, confidence="low")
+        return Fill(**base, action="combobox", value=desired, key=key, confidence="low",
+                    values=_option_candidates(key, desired))
 
     return Fill(**base, action="text", value=desired, key=key)
 
@@ -288,7 +312,7 @@ def _resolve_one(
         return Fill(**base, action="skip", reason="no match")
 
     if field.tag == "select" or field.options:
-        choice = pick_option(field.options, desired)
+        choice = pick_option_for_key(field.options, desired, key)
         if not choice:
             return Fill(**base, action="skip", value=desired, options=field.options,
                         confidence="low", reason="no matching option")
@@ -296,7 +320,8 @@ def _resolve_one(
                     key=key, confidence="high")
 
     if field.role == "combobox" or field.tag not in {"input", "textarea"}:
-        return Fill(**base, action="combobox", value=desired, key=key, confidence="low")
+        return Fill(**base, action="combobox", value=desired, key=key, confidence="low",
+                    values=_option_candidates(key, desired))
 
     if ftype in TEXTUAL_TYPES or field.tag in {"input", "textarea"}:
         return Fill(**base, action="text", value=desired, key=key,

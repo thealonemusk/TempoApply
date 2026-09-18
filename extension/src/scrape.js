@@ -121,7 +121,37 @@
     );
   }
 
+  // Workday splits a date into separate Month and Year boxes whose own labels
+  // are just "Month" and "Year". Unqualified they are ambiguous, and the
+  // resolver has to assume — so it assumes "start", and an end-date pair comes
+  // back filled with the start date. A job running from 01/2025 to Present
+  // then reads as 01/2025 to 01/2025.
+  const BARE_DATE_LABEL = /^(month|year|day|mm|yy|yyyy)$/i;
+  const DATE_GROUP_RE = /\b(from|to|start|end|through)\b/i;
+
+  /** Give a bare "Month"/"Year" box the From/To context of its date group. */
+  function qualifyDateLabel(el, label) {
+    if (!BARE_DATE_LABEL.test(clean(label))) return label;
+    let node = el.parentElement;
+    for (let i = 0; i < 6 && node; i += 1) {
+      const heading = node.querySelector(
+        "legend, [data-automation-id$='label'], [data-automation-id$='Label'], label"
+      );
+      for (const text of [heading ? clean(heading.innerText) : "", clean(labelFromAria(node))]) {
+        if (text && !BARE_DATE_LABEL.test(text) && DATE_GROUP_RE.test(text)) {
+          return `${text} ${clean(label)}`;
+        }
+      }
+      node = node.parentElement;
+    }
+    return label;
+  }
+
   function labelFor(el) {
+    return qualifyDateLabel(el, baseLabelFor(el));
+  }
+
+  function baseLabelFor(el) {
     const aria = labelFromAria(el);
     if (clean(aria)) return clean(aria);
 
@@ -384,7 +414,12 @@
    * Returns { fields, elements } — `elements` is an idx -> Element map so the
    * filler never has to re-find a node by selector (Workday ids repeat).
    */
-  TA.scrape = function scrape() {
+  TA.scrape = function scrape(root) {
+    // `root` scopes the scan to one part of the page, so the user can fill a
+    // single section of a long form instead of all of it. Entry numbering is
+    // still derived inside that scope, which is what makes "fill just this
+    // employer block" answer for the entry the user actually pointed at.
+    const scope = root && root.querySelectorAll ? root : document;
     const seen = new Set();
     const fields = [];
     const elements = new Map();
@@ -403,14 +438,14 @@
     };
 
     // Custom widgets first, so their inner inputs can be recognised as internals.
-    const widgets = queryDeep(document, CUSTOM_WIDGET_SELECTOR);
+    const widgets = queryDeep(scope, CUSTOM_WIDGET_SELECTOR);
     const widgetSet = new Set(widgets);
     for (const el of widgets) {
       if (el.matches("input, textarea, select")) continue; // handled natively below
       push(el, describeWidget);
     }
 
-    for (const el of queryDeep(document, NATIVE_SELECTOR)) {
+    for (const el of queryDeep(scope, NATIVE_SELECTOR)) {
       const ownerWidget = widgets.find((w) => w !== el && w.contains(el));
       if (ownerWidget && !widgetSet.has(el) && el.type !== "file") {
         // react-select keeps a hidden text input inside its control; skip it.

@@ -27,6 +27,20 @@ def _norm(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def _has_word(text: str, *words: str) -> bool:
+    """
+    Whole-word containment.
+
+    A plain `"to" in label` is the repo's recurring bug class: it fires on
+    "Total Compensation" and "Custom", so a pay question reads as the end date
+    of a job and comes back blank.
+    """
+    return any(
+        re.search(rf"(?<![a-z0-9]){re.escape(word)}(?![a-z0-9])", text)
+        for word in words
+    )
+
+
 def _split_month_year(value: str) -> Tuple[str, str]:
     """'01/2025' -> ('01', '2025'); 'Present' -> ('', '')."""
     raw = (value or "").strip()
@@ -62,8 +76,8 @@ def _websites(profile: ApplicantProfile) -> List[str]:
 
 def _experience_value(exp: Experience, label: str) -> str:
     n = _norm(label)
-    from_ctx = any(x in n for x in ("from", "start"))
-    to_ctx = any(x in n for x in ("to", "end", "through"))
+    from_ctx = _has_word(n, "from", "start")
+    to_ctx = _has_word(n, "to", "end", "through")
 
     # Workday splits dates into separate Month and Year inputs.
     if "month" in n or "year" in n:
@@ -73,7 +87,11 @@ def _experience_value(exp: Experience, label: str) -> str:
         month, year = _split_month_year(source)
         return month if "month" in n else year
 
-    if any(x in n for x in ("currently work", "i currently work", "current position", "present position")):
+    # Spellings seen across tenants for the "this is my current job" checkbox.
+    # Deliberately does not include "current employer" — that labels the
+    # company name box on some tenants, and answering it "Yes" loses the name.
+    if any(x in n for x in ("currently work", "currently working", "work here",
+                            "current position", "present position", "still work")):
         return "Yes" if _is_current(exp) else "No"
     # Description is checked before title: Workday labels the free-text box
     # "Role Description", which would otherwise match the title needles.
@@ -92,10 +110,37 @@ def _experience_value(exp: Experience, label: str) -> str:
     return ""
 
 
+def _website_value(profile: ApplicantProfile, label: str, index: int) -> str:
+    """
+    Which link this box wants.
+
+    Position is the fallback, not the rule. Workday numbers its Websites
+    panels, but a tenant that writes "Please provide your LinkedIn profile"
+    has named the link it wants, and panel 2 is GitHub only by accident of
+    ordering — so a named question is answered by name first.
+    """
+    n = _norm(label)
+    for needle, value in (
+        ("linkedin", profile.linkedin),
+        ("github", profile.github),
+        ("git hub", profile.github),
+        ("portfolio", profile.portfolio),
+        ("personal website", profile.portfolio),
+        ("personal site", profile.portfolio),
+    ):
+        if needle in n and value:
+            return value
+
+    sites = _websites(profile)
+    if index > len(sites):
+        return ""
+    return sites[index - 1]
+
+
 def _education_value(edu: Education, label: str, gpa: str) -> str:
     n = _norm(label)
-    from_ctx = any(x in n for x in ("from", "first year", "start"))
-    to_ctx = any(x in n for x in ("to", "last year", "end", "graduat"))
+    from_ctx = _has_word(n, "from", "start") or "first year" in n
+    to_ctx = _has_word(n, "to", "end") or "last year" in n or "graduat" in n
 
     if "year" in n and not any(x in n for x in ("field", "study")):
         return edu.end_year if to_ctx else (edu.start_year if from_ctx else edu.end_year)
@@ -139,10 +184,7 @@ def section_value(
         return _education_value(usable[index - 1], label, gpa)
 
     if kind == "website":
-        sites = _websites(profile)
-        if index > len(sites):
-            return ""
-        return sites[index - 1]
+        return _website_value(profile, label, index)
 
     return ""
 

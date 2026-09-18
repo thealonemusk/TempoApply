@@ -182,6 +182,7 @@
         <div class="job" data-job></div>
         <div class="step" data-step hidden></div>
         <button class="btn primary" data-fill>Autofill</button>
+        <button class="btn ghost" data-fill-section title="Fill only one part of this form">Fill a section</button>
         <div class="actions" data-actions-gate hidden></div>
         <div data-results hidden>
           <div class="stats">
@@ -226,6 +227,7 @@
       job: q("[data-job]"),
       dot: q("[data-dot]"),
       fill: q("[data-fill]"),
+      fillSection: q("[data-fill-section]"),
       gate: q("[data-actions-gate]"),
       step: q("[data-step]"),
       results: q("[data-results]"),
@@ -275,6 +277,9 @@
     mount(handlers) {
       build();
       el.fill.addEventListener("click", handlers.onFill);
+      if (handlers.onFillSection) {
+        el.fillSection.addEventListener("click", handlers.onFillSection);
+      }
       el.refill.addEventListener("click", handlers.onRefill);
       el.applied.addEventListener("click", handlers.onApplied);
       this.onTodoClick = handlers.onTodoClick;

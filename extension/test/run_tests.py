@@ -112,7 +112,11 @@ async def run_unit() -> None:
         print("\nWorkday — custom dropdowns, no <select> anywhere")
         check("first name", dom["wd_first"], "Ashutosh")
         check("city", dom["wd_city"], "Noida")
-        check("phone", dom["wd_phone"], "+919939964663")
+        # National, not E.164: the form has its own country-code control, and
+        # a "+91" typed into the number box on top of that is either rejected
+        # by validation or submitted as +91+91.
+        check("phone has no country code", dom["wd_phone"], "9939964663")
+        check("phone country code is separate", dom["wd_phone"].startswith("+"), False)
         check("country dropdown", dom["wd_country"], "India")
         check("phone device type", dom["wd_phone_type"], "Mobile")
         check("source multiselect", dom["wd_source"], "Company Website")
@@ -331,6 +335,232 @@ async def run_unknown_containers() -> None:
         await browser.close()
 
 
+async def run_tenant_variations() -> None:
+    """
+    Answers that differ per Workday tenant, all reported from live forms.
+
+    No browser needed — these are resolver decisions, and every one of them
+    silently left a required field blank rather than erroring.
+    """
+    from fastapi.testclient import TestClient
+
+    from backend.api.main import app
+
+    client = TestClient(app)
+    print("\nTenant variations — device type, phone format, named links, split dates")
+
+    def resolve(fields, url="https://acme.wd5.myworkdayjobs.com/x/apply"):
+        data = client.post("/api/autofill/resolve", json={
+            "url": url, "page_title": "Application", "fields": fields,
+        }).json()
+        return {f["idx"]: f for f in data["fills"]}
+
+    def field(idx, label, **kw):
+        base = {"idx": idx, "label": label, "tag": "input", "type": "text"}
+        base.update(kw)
+        return base
+
+    # Phone Device Type: the taxonomy is per tenant. "Mobile" is preferred
+    # where it exists; a tenant offering only Phone/Main must still answer.
+    out = resolve([
+        field("1", "Phone Device Type", tag="select", options=["Select", "Home", "Mobile", "Pager"]),
+        field("2", "Phone Device Type", tag="select", options=["Select", "Phone", "Main", "Fax"]),
+        field("3", "Phone Device Type", tag="button", role="combobox"),
+    ])
+    check("device type prefers Mobile", out["1"]["value"], "Mobile")
+    check("device type falls back to Phone", out["2"]["value"], "Phone")
+    check("device type not skipped", out["2"]["action"], "select")
+    check("listbox gets the fallback list", "Main" in out["3"]["values"], True)
+    check("listbox tries Mobile first", out["3"]["values"][0], "Mobile")
+
+    # Phone number: the country code lives in its own control.
+    out = resolve([
+        field("1", "Phone Number", type="tel"),
+        field("2", "Country Phone Code", tag="button", role="combobox"),
+    ])
+    check("phone number is national", out["1"]["value"], "9939964663")
+    check("phone number has no +", out["1"]["value"].startswith("+"), False)
+    check("country code is separate", out["2"]["value"], "+91")
+
+    # A link box that names the network it wants is answered by name, not by
+    # the position of its panel.
+    out = resolve([
+        field("1", "Please provide your LinkedIn profile",
+              section_kind="website", section_index=2),
+        field("2", "URL", section_kind="website", section_index=2),
+        field("3", "Social Network URLs"),
+    ])
+    check("named LinkedIn box gets LinkedIn", "linkedin.com" in out["1"]["value"], True)
+    check("unnamed panel 2 still positional", "github.com" in out["2"]["value"], True)
+    check("Social Network URLs resolves", "linkedin.com" in out["3"]["value"], True)
+
+    # Split date boxes. Workday labels them "Month"/"Year"; the scraper
+    # qualifies them with their From/To group, and a current job leaves To blank.
+    out = resolve([
+        field("1", "From Month", section_kind="experience", section_index=1),
+        field("2", "From Year", section_kind="experience", section_index=1),
+        field("3", "To Month", section_kind="experience", section_index=1),
+        field("4", "I currently work here", tag="input", type="checkbox",
+              section_kind="experience", section_index=1),
+        field("5", "To Month", section_kind="experience", section_index=2),
+        field("6", "I currently work here", tag="input", type="checkbox",
+              section_kind="experience", section_index=2),
+    ])
+    check("Paytm starts 01", out["1"]["value"], "01")
+    check("Paytm starts 2025", out["2"]["value"], "2025")
+    check("current job leaves To blank", out["3"]["action"], "skip")
+    check("Paytm is ticked current", out["4"]["action"], "checkbox")
+    check("past job keeps its end month", out["5"]["value"], "06")
+    check("internship is NOT ticked current", out["6"]["action"], "skip")
+
+
+ENTER_SKILLS_HTML = """
+<!doctype html><meta charset="utf-8"><body>
+  <div id="blockA">
+    <label for="fn">First Name</label><input id="fn">
+    <label for="ln">Last Name</label><input id="ln">
+  </div>
+  <div id="blockB">
+    <label for="em">Email</label><input id="em">
+    <label for="ph">Phone Number</label><input id="ph" type="tel">
+  </div>
+  <div data-automation-id="formField-skills">
+    <label id="sk-label">Skills</label>
+    <div data-automation-id="multiSelectContainer">
+      <span class="chips"></span>
+      <input id="sk" role="combobox" data-automation-id="searchBox" aria-labelledby="sk-label">
+    </div>
+  </div>
+  <script>
+    // A tag input with no listbox whatsoever: the only way in is type + Enter,
+    // which is exactly how the failing Workday tenant behaves.
+    var inp = document.getElementById('sk');
+    inp.addEventListener('keydown', function (e) {
+      if (e.key !== 'Enter') return;
+      var v = inp.value.trim();
+      if (!v) return;
+      var chip = document.createElement('span');
+      chip.setAttribute('data-automation-id', 'selectedItem');
+      chip.textContent = v;
+      document.querySelector('.chips').appendChild(chip);
+      inp.value = '';
+    });
+  </script>
+</body>
+"""
+
+
+async def run_enter_commit_and_sections() -> None:
+    """
+    Two things the Workday skills picker forced.
+
+    A picker with no listbox has to be driven by Enter, and a long form has to
+    be fillable one block at a time.
+    """
+    from playwright.async_api import async_playwright
+
+    print("\nEnter-commit pickers and section-scoped scraping")
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        page = await browser.new_page()
+        await page.set_content(ENTER_SKILLS_HTML)
+        await page.add_script_tag(path=str(EXT / "src" / "scrape.js"))
+        await page.add_script_tag(path=str(EXT / "src" / "fill.js"))
+
+        # Section scoping: the same page, three different answers.
+        counts = await page.evaluate(
+            """() => ({
+                 all: window.__TA.scrape().fields.length,
+                 a: window.__TA.scrape(document.querySelector('#blockA')).fields.length,
+                 b: window.__TA.scrape(document.querySelector('#blockB')).fields.length,
+                 bLabels: window.__TA.scrape(document.querySelector('#blockB'))
+                            .fields.map(f => f.label),
+               })"""
+        )
+        check("whole page sees every field", counts["all"] >= 5, True)
+        check("section A is just its two", counts["a"], 2)
+        check("section B is just its two", counts["b"], 2)
+        check("section B holds Email", any("Email" in l for l in counts["bLabels"]), True)
+        check("section B excludes First Name",
+              any("First Name" in l for l in counts["bLabels"]), False)
+
+        # Enter-commit: no listbox exists, so only a keypress can land a value.
+        committed = await page.evaluate(
+            """async () => {
+                 const { fields, elements } = window.__TA.scrape();
+                 const skill = fields.find(f => (f.label || '').toLowerCase().includes('skill'));
+                 const res = await window.__TA.applyFills(
+                   [{ idx: skill.idx, action: 'multiselect', value: 'Java',
+                      values: ['Java', 'Python', 'Docker'], label: 'Skills', confidence: 'low' }],
+                   elements, null);
+                 return {
+                   chips: Array.from(document.querySelectorAll('[data-automation-id="selectedItem"]'))
+                            .map(c => c.textContent),
+                   applied: res.applied.length,
+                   failed: res.failed.length,
+                   leftover: document.getElementById('sk').value,
+                 };
+               }"""
+        )
+        check("every skill committed", committed["chips"], ["Java", "Python", "Docker"])
+        check("picker reported success", committed["applied"], 1)
+        check("nothing failed", committed["failed"], 0)
+        check("search box left clean", committed["leftover"], "")
+
+        await browser.close()
+
+
+async def run_legal_questions() -> None:
+    """
+    Work authorization, sponsorship and the other yes/no legal questions.
+
+    Checked twice: once normally, and once with `custom_answers` emptied. The
+    second pass is the point — several of these only ever resolved because a
+    custom answer happened to cover them, so a profile edit would have
+    silently turned them back into blanks or, worse, into an address.
+    """
+    from backend.applier.fields import resolve_value
+    from backend.applier.profile import load_profile
+
+    profile = load_profile()
+    bare = load_profile()
+    bare.custom_answers = {}
+
+    print("\nLegal questions — must hold without custom_answers")
+    cases = [
+        ("Are you legally authorized to work in the listed work location?", "Yes"),
+        ("Are you legally authorised to work in the country of the job location?", "Yes"),
+        ("Do you have the legal right to work in the listed location?", "Yes"),
+        ("Will you now or in future require a sponsorship?", "No"),
+        ("Will you require company sponsorship now or at any time in the future?", "No"),
+        ("Do you now or will you in the future require immigration sponsorship?", "No"),
+        ("Have you ever been employed by this company?", "No"),
+        ("Are you a current or former employee of the company?", "No"),
+        ("Are you subject to any employment agreements with your current employer?", "No"),
+        ("Do you require any accommodation during the interview process?", "No"),
+        ("What are your total years of professional experience?", "2"),
+    ]
+    for label, want in cases:
+        check(label[:26], resolve_value(bare, label), want)
+
+    # The precedence bug: a noun alias inside a yes/no question used to win.
+    check("legal question is not an address",
+          "Noida" in resolve_value(bare, "Do you have the legal right to work in the listed location?"),
+          False)
+    check("agreements question is not an employer",
+          resolve_value(bare, "Are you subject to any employment agreements with your current employer?"),
+          "No")
+
+    # ...but a question-shaped label with no rule still falls back to the field,
+    # and a plain field label is untouched by any of this.
+    check("preferred work location", resolve_value(profile, "What is your preferred work location?"), "Noida")
+    check("current company", resolve_value(profile, "Current Company"), "Paytm")
+    check("email", resolve_value(profile, "Email Address"), "@")
+    check("expected ctc", resolve_value(profile, "Expected CTC"), "2100000")
+    check("linkedin", resolve_value(profile, "LinkedIn Profile"), "linkedin.com")
+
+
 # ── Integration: the real extension in Chrome ────────────────────────────────
 
 def _serve(directory: Path):
@@ -392,7 +622,7 @@ async def run_integration() -> None:
 
             frame = page.frames[1]
             check("iframe first name", await frame.locator("#f").input_value(), "Ashutosh")
-            check("iframe phone", await frame.locator("#p").input_value(), "+91")
+            check("iframe phone", await frame.locator("#p").input_value(), "9939964663")
             check(
                 "iframe radio group",
                 await frame.evaluate(
@@ -414,6 +644,9 @@ async def main() -> None:
     await run_unit()
     await run_sections()
     await run_unknown_containers()
+    await run_tenant_variations()
+    await run_legal_questions()
+    await run_enter_commit_and_sections()
     if "--integration" in sys.argv:
         await run_integration()
 

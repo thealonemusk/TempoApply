@@ -32,6 +32,7 @@ Works in Chrome, Edge, Brave and any Chromium browser.
 | Action | How |
 | --- | --- |
 | Fill the current page | Click **Autofill** on the panel, or press `Alt+Shift+F` |
+| Fill only one part of the form | **Fill a section**, then click the block you want. `Esc` cancels |
 | Re-fill over existing values | **Fill again** |
 | Jump to a question it could not answer | Click it in the amber list |
 | Record the application in the dashboard | **Mark applied** |
@@ -75,6 +76,18 @@ your previous answers forward, so there is far less left to fill or correct.
 Workday replaces the whole page on every step, so press `Alt+Shift+F` again on
 each one. The panel re-reads the stage on its own as the page changes.
 
+### Filling one section at a time
+
+**Fill a section** arms a picker: hovering outlines the smallest block holding
+more than one field and shows how many it would fill, and clicking fills only
+that block. It works in embedded forms too — the picker is armed in every
+frame and whichever one gets the click wins.
+
+A section run always overwrites, because the reason to point at a block is
+usually that what is in it is wrong. It does not click any **Add** buttons:
+you chose a region, and opening new entries underneath it would be filling
+what you did not pick.
+
 ### Repeating sections (My Experience)
 
 Work Experience, Education and Websites are not on the page when the step
@@ -96,6 +109,13 @@ To fields blank.
 The **Skills** picker takes values one at a time rather than one comma-joined
 string, and only plain taxonomy names are offered — a compound entry like
 `TLS/Certificate Rotation` would never match a Workday skill.
+
+Each value is typed, then committed by whichever route the widget supports:
+the matching option if the tenant renders a listbox, otherwise `Enter`, the
+way a person adds a tag. Success is measured by the entry actually appearing
+in the field, not by the click having been dispatched. Typing into a picker
+never fires `blur` — Workday closes the listbox on blur, and doing so used to
+tear the menu down before any option could be clicked.
 
 ### Repeating entries when the ids are unfamiliar
 

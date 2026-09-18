@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import re
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from backend.applier.profile import ApplicantProfile, Education
 
@@ -10,13 +10,18 @@ from backend.applier.profile import ApplicantProfile, Education
 FIELD_ALIASES: List[Tuple[str, Tuple[str, ...]]] = [
     ("first_name", ("first name", "firstname", "given name", "legal first", "preferred first")),
     ("last_name", ("last name", "lastname", "surname", "family name", "legal last")),
-    ("full_name", ("full name", "legal name", "applicant name", "your name", "candidate name")),
+    ("full_name", ("full name", "legal name", "applicant name", "your name", "candidate name",
+                   "preferred name")),
     ("email", ("email address", "e-mail", "email")),
     # Must precede "phone": Workday asks for a *device type* ("Mobile"), not a number.
     ("phone_device_type", ("phone device type", "phone type", "device type")),
     ("phone", ("phone number", "mobile number", "telephone", "mobile phone", "cell phone", "phone", "mobile", "cell")),
     ("phone_country", ("phone country", "country code", "dialing code")),
-    ("linkedin", ("linkedin url", "linkedin profile link", "linkedin profile", "linkedin")),
+    # Workday's Websites step asks under a "Social Network URLs" heading and
+    # phrases the question as prose ("Please provide your LinkedIn profile"),
+    # neither of which contains a bare "linkedin url".
+    ("linkedin", ("linkedin url", "linkedin profile link", "linkedin profile", "linkedin",
+                  "social network url", "social network")),
     ("github", ("github url", "github profile", "github", "git hub")),
     ("portfolio", ("portfolio url", "personal website", "personal url", "website url", "portfolio", "website")),
     ("salary_expectation", (
@@ -34,7 +39,10 @@ FIELD_ALIASES: List[Tuple[str, Tuple[str, ...]]] = [
     ("location", ("current location", "location", "city, state", "where are you based")),
     ("current_company", ("current company", "current employer", "company name", "employer", "organization")),
     ("current_title", ("current title", "job title", "headline", "most recent title")),
-    ("years_experience", ("years of experience", "years experience", "total experience", "experience (years)")),
+    ("years_experience", ("years of professional experience", "years of work experience",
+                          "years of relevant experience", "total years of experience",
+                          "years of experience", "years experience", "total experience",
+                          "total years")),
     ("earliest_start", ("earliest start", "start date", "available from", "availability date", "when can you start", "date available")),
     ("cover_letter", ("cover letter", "additional information", "additional details", "comments", "message to hiring")),
     ("school", ("school name", "university", "college", "institution", "school")),
@@ -48,17 +56,42 @@ FIELD_ALIASES: List[Tuple[str, Tuple[str, ...]]] = [
 
 YES_TRUE = {"yes", "true", "y", "1"}
 
+# Acceptable substitutes when a dropdown does not offer the profile's answer,
+# most preferred first. Workday's Phone Device Type taxonomy is per tenant:
+# some offer "Mobile", others only "Phone" and "Main", and a field skipped for
+# "no matching option" is a required field left blank at submit time.
+OPTION_FALLBACKS: Dict[str, Tuple[str, ...]] = {
+    "phone_device_type": ("Mobile", "Cell", "Cell Phone", "Mobile Phone", "Phone", "Main", "Home"),
+}
+
 QUESTION_RULES: List[Tuple[Tuple[str, ...], str]] = [
     (("how did you hear", "where did you hear", "how did you find this", "source of hire", "where did you see the vacancy"), "how_heard"),
     (("country of residence", "current country of residence", "current country"), "country"),
     (("employment agreement", "post-employment", "restrictive covenant"), "no"),
-    (("previously worked", "have you previously worked", "consulted for gitlab", "consulted for"), "no"),
+    (("previously worked", "have you previously worked", "consulted for gitlab", "consulted for",
+      "ever been employed", "previously been employed", "former employee",
+      "current or former employee", "ever worked for"), "no"),
+    # Interview accommodation is a yes/no logistics question, not the EEO
+    # disability self-identification below it.
+    (("accommodation", "accomodation"), "no"),
     (("valid passport",), "yes"),
-    (("legally authorized to work in india", "authorized to work in india", "eligible to work in india", "authorized to work in the country"), "yes"),
-    (("legally authorized to work in india", "authorized to work in india", "eligible to work in india"), "yes"),
+    (("legally authorized to work in india", "authorized to work in india",
+      "legally authorised to work in india", "authorised to work in india",
+      "eligible to work in india", "authorized to work in the country",
+      "authorised to work in the country"), "yes"),
     (("legally authorized to work in the united states", "authorized to work in the us", "authorized to work in the u.s"), "work_auth_us"),
-    (("legally authorized", "authorized to work", "eligible to work", "right to work", "work authorization"), "work_auth"),
-    (("require sponsorship", "need sponsorship", "visa sponsorship", "require visa", "future sponsorship", "immigration sponsorship"), "sponsorship"),
+    # British spellings are not a variant we can skip: half of the Workday
+    # tenants aimed at India write "authorised", and without these the label
+    # falls through to the "country"/"location" field aliases and answers a
+    # yes/no question with an address.
+    (("legally authorized", "legally authorised", "authorized to work", "authorised to work",
+      "eligible to work", "right to work", "work authorization", "work authorisation",
+      "legal right to work"), "work_auth"),
+    # "require a sponsorship" and "require company sponsorship" both miss an
+    # exact "require sponsorship", so the bare noun is the last needle here.
+    (("require sponsorship", "require a sponsorship", "need sponsorship", "need a sponsorship",
+      "visa sponsorship", "require visa", "future sponsorship", "immigration sponsorship",
+      "company sponsorship", "sponsorship for employment", "sponsorship"), "sponsorship"),
     (("over 18", "18 years of age", "at least 18"), "yes"),
     (("willing to relocate", "open to relocate", "can you relocate", "ready to relocate"), "relocate"),
     (("attached a custom cover letter", "have you attached a custom cover"), "no"),
@@ -192,6 +225,16 @@ def match_question_key(label: str) -> Optional[str]:
     return None
 
 
+# A label opening with one of these is a question, whatever nouns it contains.
+_QUESTION_SHAPE = re.compile(
+    r"^(do|does|did|are|is|was|were|will|would|have|has|had|can|could|should|may|must)\b"
+)
+
+
+def is_yes_no_question(label: str) -> bool:
+    return bool(_QUESTION_SHAPE.match(_norm(label)))
+
+
 def resolve_value(profile: ApplicantProfile, label: str, job_title: str = "", company: str = "") -> str:
     label_n = _norm(label)
     title_n = _norm(job_title)
@@ -204,10 +247,19 @@ def resolve_value(profile: ApplicantProfile, label: str, job_title: str = "", co
     custom = custom_answer(profile, label)
     if custom:
         return custom
+
     key = match_field_key(label)
+    qkey = match_question_key(label)
+
+    # A yes/no question is answered by its question rule, even when a field
+    # alias happens to occur inside it. "Do you have the legal right to work in
+    # the listed location?" contains "location", and answering a legal question
+    # with "Noida, Uttar Pradesh, India" is the same class of mistake as
+    # answering "employment agreements" with "Paytm" — it reaches the employer.
+    if qkey and (is_yes_no_question(label) or not key):
+        return value_for_key(profile, qkey, job_title, company)
     if key:
         return value_for_key(profile, key, job_title, company)
-    qkey = match_question_key(label)
     if qkey:
         return value_for_key(profile, qkey, job_title, company)
     return ""
@@ -253,6 +305,25 @@ def pick_option(options: List[str], desired: str) -> Optional[str]:
     # Prefer a non-placeholder option only when there is exactly one real choice.
     if len(cleaned) == 1:
         return cleaned[0][0]
+    return None
+
+
+def pick_option_for_key(options: List[str], desired: str, key: str = "") -> Optional[str]:
+    """
+    `pick_option`, then the substitutes this field accepts.
+
+    Only consulted when the profile's own answer is genuinely absent from the
+    list, so a tenant that does offer "Mobile" still gets "Mobile".
+    """
+    choice = pick_option(options, desired)
+    if choice:
+        return choice
+    for alternative in OPTION_FALLBACKS.get(key, ()):
+        if _norm(alternative) == _norm(desired):
+            continue
+        choice = pick_option(options, alternative)
+        if choice:
+            return choice
     return None
 
 

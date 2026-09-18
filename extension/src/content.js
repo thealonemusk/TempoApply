@@ -80,11 +80,15 @@
   }
 
   async function runFrame(opts) {
-    let { fields, elements } = TA.scrape();
+    // `opts.root` scopes the run to one section the user pointed at. Section
+    // runs never expand the Add-an-entry blocks: the user chose a region, and
+    // opening new ones underneath it would be filling what they did not pick.
+    const root = (opts && opts.root) || null;
+    let { fields, elements } = TA.scrape(root);
     state.fields = fields;
     state.elements = elements;
 
-    const stage = TA.detectStage();
+    const stage = root ? { stage: "form", step: "" } : TA.detectStage();
     state.stage = stage;
     // A gate or a credentials step has nothing fillable behind it yet; say so
     // rather than reporting "0 filled".
@@ -106,9 +110,9 @@
     // Workday's My Experience step hides Work Experience, Education and
     // Websites behind Add buttons — there is nothing to fill until they are
     // opened. Open as many entries as the profile can fill, then look again.
-    const added = await TA.expandSections(resolved.data.sections_needed);
+    const added = root ? 0 : await TA.expandSections(resolved.data.sections_needed);
     if (added) {
-      ({ fields, elements } = TA.scrape());
+      ({ fields, elements } = TA.scrape(root));
       state.fields = fields;
       state.elements = elements;
       const again = await resolveFields(fields, opts);
@@ -285,6 +289,93 @@
     setTimeout(done, 15000);
   }
 
+  // ── Fill one section ───────────────────────────────────────────────────────
+  //
+  // The picker has to be armed in every frame, because on Glassdoor and
+  // embedded Greenhouse boards the form the user wants to point at is not in
+  // the top frame at all. Whichever frame gets the click wins; the rest are
+  // told to stand down.
+
+  let picking = false;
+
+  async function armPicker() {
+    if (picking) return;
+    picking = true;
+    TA.injectStyles();
+    let section = null;
+    try {
+      section = await TA.pickSection();
+    } finally {
+      picking = false;
+    }
+    if (!section) {
+      if (isTop) {
+        // Drop the aggregation we armed, or its grace timer fires later and
+        // overwrites the panel with an empty tally.
+        state.pending = null;
+        finishSection(null);
+      }
+      return;
+    }
+    // Claim it, so the other frames drop out of picking mode.
+    send({ type: "broadcast", message: { type: "TA_PICK_CANCEL" } });
+    if (isTop) {
+      state.pending = null;
+      await fillSection(section);
+    } else {
+      send({ type: "starting" });
+      const result = await runFrame({ overwrite: true, root: section });
+      send({ type: "report", result });
+    }
+  }
+
+  async function fillSection(section) {
+    state.busy = true;
+    TA.widget.setBusy(true, "Filling section…");
+    TA.widget.message("");
+    const totals = merge(blankTotals(), await runFrame({ overwrite: true, root: section }));
+    finish(totals);
+  }
+
+  function finishSection(totals) {
+    state.busy = false;
+    TA.widget.setBusy(false);
+    if (!totals) TA.widget.message("Section fill cancelled.", "info");
+  }
+
+  /** Top frame: arm every frame's picker and wait for whichever one is used. */
+  async function pickAndFill() {
+    if (state.busy || picking) return;
+    TA.widget.message(
+      "Click the part of the form you want filled — <b>Esc</b> to cancel.",
+      "info"
+    );
+
+    const pending = { totals: blankTotals(), expected: 0, reported: 0, ownDone: true, timer: null };
+    state.pending = pending;
+    const done = () => {
+      if (state.pending !== pending) return;
+      state.pending = null;
+      clearTimeout(pending.timer);
+      finish(pending.totals);
+    };
+    pending.maybeDone = () => {
+      clearTimeout(pending.timer);
+      if (pending.reported >= pending.expected && pending.expected > 0) {
+        pending.timer = setTimeout(done, 300);
+      }
+    };
+    pending.noteStarting = () => {
+      state.busy = true;
+      TA.widget.setBusy(true, "Filling section…");
+      pending.expected += 1;
+      clearTimeout(pending.timer);
+    };
+
+    send({ type: "broadcast", message: { type: "TA_PICK" } });
+    await armPicker();
+  }
+
   // ── Messaging ──────────────────────────────────────────────────────────────
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -305,6 +396,20 @@
         (result) => send({ type: "report", result }),
         () => send({ type: "report", result: { scraped: 0, filled: 0, low: 0, failed: 0, unresolved: [] } })
       );
+      sendResponse({ ok: true });
+      return;
+    }
+
+    // Arm the picker in a child frame; the form is often not in the top one.
+    if (message.type === "TA_PICK" && !isTop) {
+      armPicker();
+      sendResponse({ ok: true });
+      return;
+    }
+
+    // Another frame got the click: stand down.
+    if (message.type === "TA_PICK_CANCEL") {
+      TA.cancelPick();
       sendResponse({ ok: true });
       return;
     }
@@ -442,6 +547,7 @@
     if (!force && !TA.looksLikeApplication()) return;
     TA.widget.mount({
       onFill: () => runAll({ overwrite: false }),
+      onFillSection: pickAndFill,
       onRefill: () => runAll({ overwrite: true }),
       onApplied: markApplied,
       onTodoClick: focusTodo,
