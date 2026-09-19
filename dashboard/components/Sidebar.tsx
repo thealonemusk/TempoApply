@@ -13,6 +13,19 @@ const NAV = [
   { href: '/settings', icon: Settings, label: 'Settings' },
 ];
 
+/**
+ * Navigation, in two shapes.
+ *
+ * Below `lg` the sidebar becomes a bottom tab bar rather than a drawer. A
+ * drawer needs a trigger, and the only place to put one is the page header —
+ * which is already `sticky top-0`, so the two would fight over the same strip
+ * and the same z-index. A tab bar owns the bottom edge, which nothing else
+ * uses, needs no open/close state, and is the pattern iOS users already know.
+ *
+ * The breakpoint is `lg` (1024px) on purpose: a 15rem sidebar leaves an iPad
+ * in portrait (820px) about 580px for a six-column table, which is not enough.
+ * Portrait gets the tab bar and the full width; landscape gets the sidebar.
+ */
 export function Sidebar() {
   const path = usePathname();
   const { theme, setTheme } = useTheme();
@@ -20,44 +33,84 @@ export function Sidebar() {
 
   useEffect(() => setMounted(true), []);
 
-  return (
-    <aside className="flex h-screen w-[var(--sidebar-width)] flex-col border-r border-[var(--border)] bg-[var(--surface)]">
-      <div className="px-5 py-6">
-        <p className="text-lg font-semibold tracking-tight text-[var(--text-primary)]">TempoApply</p>
-        <p className="mt-0.5 text-xs text-[var(--text-muted)]">Job discovery & apply</p>
-      </div>
+  const isDark = mounted && theme === 'dark';
+  const toggleTheme = () => setTheme(isDark ? 'light' : 'dark');
 
-      <nav className="flex-1 space-y-0.5 px-3">
+  return (
+    <>
+      <aside className="sticky top-0 hidden h-screen w-[var(--sidebar-width)] shrink-0 flex-col border-r border-[var(--border)] bg-[var(--surface)] lg:flex">
+        <div className="px-5 py-6">
+          <p className="text-lg font-semibold tracking-tight text-[var(--text-primary)]">
+            TempoApply
+          </p>
+          <p className="mt-0.5 text-xs text-[var(--text-muted)]">Job discovery &amp; apply</p>
+        </div>
+
+        <nav className="flex-1 space-y-0.5 px-3">
+          {NAV.map(({ href, icon: Icon, label }) => {
+            const active = path === href;
+            return (
+              <Link
+                key={href}
+                href={href}
+                className={clsx(
+                  'flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-colors',
+                  active
+                    ? 'bg-[var(--surface-2)] text-[var(--text-primary)]'
+                    : 'text-[var(--text-secondary)] hover:bg-[var(--surface-2)] hover:text-[var(--text-primary)]',
+                )}
+              >
+                <Icon className="h-4 w-4 shrink-0" />
+                {label}
+              </Link>
+            );
+          })}
+        </nav>
+
+        <div className="border-t border-[var(--border)] p-3">
+          <button
+            type="button"
+            onClick={toggleTheme}
+            className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface-2)] hover:text-[var(--text-primary)]"
+          >
+            {isDark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+            {isDark ? 'Light mode' : 'Dark mode'}
+          </button>
+        </div>
+      </aside>
+
+      {/* Mobile / tablet-portrait tab bar. */}
+      <nav
+        className="glass fixed inset-x-0 bottom-0 z-40 flex items-stretch border-t border-[var(--border)] lg:hidden"
+        style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}
+      >
         {NAV.map(({ href, icon: Icon, label }) => {
           const active = path === href;
           return (
             <Link
               key={href}
               href={href}
+              aria-current={active ? 'page' : undefined}
               className={clsx(
-                'flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-colors',
-                active
-                  ? 'bg-[var(--surface-2)] text-[var(--text-primary)]'
-                  : 'text-[var(--text-secondary)] hover:bg-[var(--surface-2)] hover:text-[var(--text-primary)]',
+                'flex flex-1 flex-col items-center justify-center gap-1 py-2.5 text-[11px] font-medium transition-colors',
+                active ? 'text-[var(--accent)]' : 'text-[var(--text-muted)]',
               )}
             >
-              <Icon className="h-4 w-4 shrink-0" />
+              <Icon className="h-5 w-5" />
               {label}
             </Link>
           );
         })}
-      </nav>
-
-      <div className="border-t border-[var(--border)] p-3">
         <button
           type="button"
-          onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
-          className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface-2)] hover:text-[var(--text-primary)]"
+          onClick={toggleTheme}
+          aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+          className="flex flex-1 flex-col items-center justify-center gap-1 py-2.5 text-[11px] font-medium text-[var(--text-muted)]"
         >
-          {mounted && theme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-          {mounted && theme === 'dark' ? 'Light mode' : 'Dark mode'}
+          {isDark ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
+          Theme
         </button>
-      </div>
-    </aside>
+      </nav>
+    </>
   );
 }

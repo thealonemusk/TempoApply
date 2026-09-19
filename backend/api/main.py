@@ -248,6 +248,21 @@ def clear_discovered_jobs(db: Session = Depends(get_db)):
     return {"success": True, "deleted_count": deleted_count}
 
 
+@app.post("/api/jobs/purge-visited")
+def purge_visited(db: Session = Depends(get_db)):
+    """
+    Drop every job already opened, so the queue only holds what is still to do.
+
+    Applied / interviewing / offer rows are left alone by
+    `purge_visited_jobs` — opening a posting you then applied to must not
+    delete the record of the application.
+    """
+    from backend.pipeline import purge_visited_jobs
+
+    removed = purge_visited_jobs(db)
+    return {"success": True, "removed_count": removed}
+
+
 @app.post("/api/jobs/purge-stale")
 def purge_stale_jobs(
     max_age_hours: int = Query(JOB_FRESHNESS_HOURS, ge=1),
@@ -339,21 +354,53 @@ def seen_unblock(payload: UnblockRequest, db: Session = Depends(get_db)):
 
 # ─── Scan Pipeline ───────────────────────────────────────────────────────────
 
-_scan_status = {"running": False, "last_result": None}
+_scan_status = {"running": False, "last_result": None, "started_at": None}
+
+# A scan that has been "running" for longer than this is wedged, not slow. No
+# scraper has a hard timeout of its own, so without this a single hung request
+# leaves `running` stuck True for the life of the process — and every later
+# Scan click is refused with a 409 the user never sees.
+SCAN_STALL_SECONDS = 30 * 60
+
+
+def _scan_runtime() -> float:
+    started = _scan_status.get("started_at")
+    if not started:
+        return 0.0
+    return (datetime.utcnow() - started).total_seconds()
+
+
+def _scan_is_stalled() -> bool:
+    return bool(_scan_status["running"]) and _scan_runtime() > SCAN_STALL_SECONDS
 
 
 @app.post("/api/scan")
 async def start_scan(req: ScanRequest, background_tasks: BackgroundTasks):
     """Trigger a background job scan across platforms."""
-    if _scan_status["running"]:
-        raise HTTPException(status_code=409, detail="Scan already running")
+    if _scan_status["running"] and not _scan_is_stalled():
+        raise HTTPException(
+            status_code=409,
+            detail=f"A scan has been running for {int(_scan_runtime())}s. "
+                   f"Stop it first, or wait for it to finish.",
+        )
+    if _scan_is_stalled():
+        logger.warning(
+            f"Previous scan wedged after {int(_scan_runtime())}s — starting a new one"
+        )
+
+    # Claimed here, not inside the task. FastAPI runs background tasks *after*
+    # the response is sent, so setting it in there leaves a window where the
+    # POST has answered "started" but /api/scan/status still says False — the
+    # dashboard polls, sees False, and drops straight out of its scanning
+    # state. It also made the 409 guard above racy against a double click.
+    _scan_status["running"] = True
+    _scan_status["last_result"] = None
+    _scan_status["started_at"] = datetime.utcnow()
 
     async def do_scan():
         from backend.scan_control import clear_stop
 
         clear_stop()
-        _scan_status["running"] = True
-        _scan_status["last_result"] = None
         try:
             from backend.pipeline import run_scan_pipeline
             result = await run_scan_pipeline(
@@ -367,6 +414,7 @@ async def start_scan(req: ScanRequest, background_tasks: BackgroundTasks):
             _scan_status["last_result"] = {"error": str(e)}
         finally:
             _scan_status["running"] = False
+            _scan_status["started_at"] = None
 
     background_tasks.add_task(do_scan)
     return {"message": "Scan started", "running": True}
@@ -374,16 +422,39 @@ async def start_scan(req: ScanRequest, background_tasks: BackgroundTasks):
 
 @app.get("/api/scan/status")
 def get_scan_status():
-    return _scan_status
+    return {
+        **_scan_status,
+        "elapsed_seconds": int(_scan_runtime()),
+        "stalled": _scan_is_stalled(),
+    }
 
 
 @app.post("/api/scan/stop")
-def stop_scan():
+def stop_scan(force: bool = Query(False)):
+    """
+    Ask the scan to stop.
+
+    The flag is cooperative — a scraper blocked on a request that never returns
+    will not see it. `force` is the way out of that: it releases the status so
+    a new scan can be started, which is the only thing the user actually needs
+    when the old one is wedged.
+    """
     from backend.scan_control import request_stop
 
     if not _scan_status["running"]:
         return {"message": "Scan is not running", "running": False}
+
     request_stop()
+    if force or _scan_is_stalled():
+        elapsed = int(_scan_runtime())
+        _scan_status["running"] = False
+        _scan_status["started_at"] = None
+        _scan_status["last_result"] = {
+            "error": f"Scan abandoned after {elapsed}s — it had stopped responding."
+        }
+        logger.warning(f"Scan force-released after {elapsed}s")
+        return {"message": "Scan abandoned", "running": False, "forced": True}
+
     return {"message": "Stop requested", "running": True}
 
 
@@ -454,9 +525,13 @@ async def start_apply(req: ApplyRequest, background_tasks: BackgroundTasks):
     if missing:
         raise HTTPException(status_code=400, detail="Profile incomplete: " + ", ".join(missing))
 
+    # Claimed before the task is queued, for the same reason as the scan: a
+    # background task starts after the response, so the dashboard's first poll
+    # would otherwise see running=False and give up on the run.
+    _apply_status["running"] = True
+    _apply_status["current_job"] = None
+
     async def do_apply():
-        _apply_status["running"] = True
-        _apply_status["current_job"] = None
         try:
             from backend.applier.engine import run_apply_pipeline
             result = await run_apply_pipeline(

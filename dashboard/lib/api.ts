@@ -34,8 +34,15 @@ export const api = {
       }),
     }),
 
-  stopScan: () =>
-    request<{ message: string; running: boolean }>('/api/scan/stop', { method: 'POST' }),
+  // `force` abandons a scan that has stopped responding. The stop flag is
+  // cooperative, so a scraper blocked on a request that never returns will
+  // never see it — without this the status stays stuck and every later scan
+  // is refused.
+  stopScan: (force = false) =>
+    request<{ message: string; running: boolean; forced?: boolean }>(
+      `/api/scan/stop${force ? '?force=true' : ''}`,
+      { method: 'POST' }
+    ),
 
   updateJobStatus: (id: string, status: string) =>
     request<{ success: boolean }>(`/api/jobs/${id}/status`, {
@@ -49,18 +56,8 @@ export const api = {
       method: 'POST',
     }),
 
-  addManualJob: (job: {
-    title: string;
-    company: string;
-    url: string;
-    jd_text: string;
-    location?: string;
-  }) =>
-    request('/api/jobs/manual', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(job),
-    }),
+  purgeVisitedJobs: () =>
+    request<{ removed_count: number }>('/api/jobs/purge-visited', { method: 'POST' }),
 
   clearDiscoveredJobs: () =>
     request<{ deleted_count: number }>('/api/jobs/clear', { method: 'DELETE' }),

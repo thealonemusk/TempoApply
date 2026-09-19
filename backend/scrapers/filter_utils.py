@@ -100,6 +100,27 @@ US_STATE_RE = re.compile(
     r'UT|VA|VT|WA|WI|WV)\b',
     re.IGNORECASE,
 )
+# Cities to skip outright, however well the role scores.
+EXCLUDED_CITIES = (
+    "kochi", "cochin", "ernakulam",
+    "chennai", "madras",
+)
+
+# LinkedIn keeps listings up after the employer has closed them. The posting
+# still scrapes fine — title, company, a full description — so nothing else
+# here rejects it, and it sits in the queue looking applicable until you open
+# it. The phrase is on the page in place of the Apply button.
+CLOSED_MARKERS = (
+    "no longer accepting applications",
+    "not currently accepting applications",
+    "not accepting applications",
+    "this job is no longer available",
+    "this job is no longer accepting",
+    "applications are closed",
+    "position has been filled",
+    "posting has expired",
+)
+
 FRONTEND_MARKERS = (
     "frontend", "front-end", "front end",
     "ui engineer", "ui developer", "ui/ux", "ux engineer",
@@ -254,6 +275,14 @@ def is_location_allowed(job_data: dict) -> Tuple[bool, str]:
     platform = (job_data.get("platform") or "").lower()
     blob = f"{location} {title} {jd}".lower()
 
+    # Cities the user will not relocate to. Matched on the location and title
+    # only, never the JD — a Bengaluru posting that merely mentions a Chennai
+    # office in its boilerplate is still a Bengaluru job.
+    where = f"{location} {title}".lower()
+    for city in EXCLUDED_CITIES:
+        if _contains_marker(where, city):
+            return False, f"Excluded city: '{location or title}'"
+
     has_india = any(_contains_marker(blob, m) for m in INDIA_MARKERS)
     has_abroad = any(_contains_marker(blob, m) for m in ABROAD_MARKERS) or bool(US_STATE_RE.search(location))
 
@@ -271,6 +300,20 @@ def is_location_allowed(job_data: dict) -> Tuple[bool, str]:
     return False, f"Non-India location: '{location}'"
 
 
+def is_closed_posting(job_data: dict) -> Tuple[bool, str]:
+    """Has the employer stopped taking applications for this listing?"""
+    blob = " ".join([
+        job_data.get("jd_text") or "",
+        job_data.get("title") or "",
+        job_data.get("apply_note") or "",
+    ]).lower()
+    blob = re.sub(r"\s+", " ", blob)
+    for marker in CLOSED_MARKERS:
+        if marker in blob:
+            return True, f"Closed listing: '{marker}'"
+    return False, ""
+
+
 def passes_hard_filters(
     job_data: dict,
     max_years: float = MAX_JD_EXPERIENCE_YEARS,
@@ -278,6 +321,9 @@ def passes_hard_filters(
 ) -> Tuple[bool, str]:
     title = job_data.get("title") or ""
     jd = job_data.get("jd_text") or ""
+    closed, why = is_closed_posting(job_data)
+    if closed:
+        return False, why
     if is_pure_frontend_role(title, jd):
         return False, f"Frontend role: '{title}'"
     ok, reason = is_location_allowed(job_data)

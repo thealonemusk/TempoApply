@@ -13,7 +13,7 @@ export default function AutopilotLayout({ children }: { children: React.ReactNod
   return (
     <div className="flex min-h-screen flex-col bg-[var(--bg)]">
       <header className="glass sticky top-0 z-20 border-b border-[var(--border)]">
-        <div className="mx-auto flex max-w-6xl items-center gap-4 px-8 py-4">
+        <div className="page-x mx-auto flex max-w-6xl flex-wrap items-center gap-x-4 gap-y-2 py-3 sm:py-4">
           <Link
             href="/"
             className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-sm text-[var(--text-muted)] transition-colors hover:bg-[var(--surface-2)] hover:text-[var(--text-primary)]"

@@ -152,13 +152,13 @@ export default function SettingsPage() {
 
   return (
     <>
-      <header className="glass sticky top-0 z-20 border-b border-[var(--border)] px-8 py-5">
+      <header className="page-x glass sticky top-0 z-20 border-b border-[var(--border)] py-4 sm:py-5">
         <h1 className="text-2xl font-semibold tracking-tight text-[var(--text-primary)]">Settings</h1>
         <p className="mt-0.5 text-sm text-[var(--text-muted)]">Applicant profile, preferences, and credentials</p>
       </header>
 
-      <div className="flex-1 overflow-y-auto px-8 py-6">
-        <div className="mx-auto max-w-2xl space-y-6 pb-12">
+      <div className="page-x pb-nav flex-1 overflow-y-auto pt-5 sm:pt-6">
+        <div className="mx-auto max-w-2xl space-y-6">
           <Card>
             <CardTitle>Applicant profile</CardTitle>
             <CardDescription>
@@ -170,7 +170,7 @@ export default function SettingsPage() {
               </p>
             )}
             <div className="mt-5 space-y-4">
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <div>
                   <Label>First name</Label>
                   <Input {...pf('first_name')} />
@@ -192,7 +192,7 @@ export default function SettingsPage() {
                 <Label>Street address</Label>
                 <Input {...pf('address_line1')} placeholder="Required for most Workday forms" />
               </div>
-              <div className="grid grid-cols-3 gap-4">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
                 <div>
                   <Label>City</Label>
                   <Input {...pf('city')} />
@@ -206,7 +206,7 @@ export default function SettingsPage() {
                   <Input {...pf('postal_code')} />
                 </div>
               </div>
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <div>
                   <Label>LinkedIn</Label>
                   <Input {...pf('linkedin')} />
@@ -220,7 +220,7 @@ export default function SettingsPage() {
                 <Label>Portfolio</Label>
                 <Input {...pf('portfolio')} />
               </div>
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <div>
                   <Label>Current title</Label>
                   <Input {...pf('current_title')} />
@@ -230,7 +230,7 @@ export default function SettingsPage() {
                   <Input {...pf('current_company')} />
                 </div>
               </div>
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <div>
                   <Label>Years of experience</Label>
                   <Input {...pf('years_experience')} />
@@ -368,7 +368,7 @@ export default function SettingsPage() {
                   </p>
                 )}
               </div>
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <div>
                   <Label>Max experience (years)</Label>
                   <Input type="number" {...f('experience_years')} />
@@ -407,7 +407,7 @@ export default function SettingsPage() {
                 <Label>Gemini API key</Label>
                 <Input type="password" {...f('gemini_api_key')} placeholder="Leave blank to keep existing" />
               </div>
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <div>
                   <Label>LinkedIn email</Label>
                   <Input {...f('linkedin_email')} />

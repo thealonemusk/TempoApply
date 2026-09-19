@@ -54,6 +54,19 @@ body {
   font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  /* No horizontal scroll, whatever a child tries to do. Wide content that
+     genuinely needs it (the jobs table) scrolls inside its own container. */
+  overflow-x: hidden;
+}
+
+/* iOS zooms the page in when a focused input's text is under 16px, and never
+   zooms back out — which is most of why the forms felt broken on a phone. */
+@media (max-width: 767px) {
+  input,
+  select,
+  textarea {
+    font-size: 16px;
+  }
 }
 
 ::-webkit-scrollbar {
@@ -71,6 +84,49 @@ body {
 }
 
 @layer utilities {
+  /* Page gutters, one definition. Every header and scroll body uses this so
+     they cannot drift apart at a breakpoint. */
+  .page-x {
+    padding-left: 1rem;
+    padding-right: 1rem;
+  }
+
+  @media (min-width: 640px) {
+    .page-x {
+      padding-left: 1.5rem;
+      padding-right: 1.5rem;
+    }
+  }
+
+  @media (min-width: 1024px) {
+    .page-x {
+      padding-left: 2rem;
+      padding-right: 2rem;
+    }
+  }
+
+  /* Clears the mobile tab bar, plus the iPhone home indicator under it. */
+  .pb-nav {
+    padding-bottom: calc(5.5rem + env(safe-area-inset-bottom, 0px));
+  }
+
+  @media (min-width: 1024px) {
+    .pb-nav {
+      padding-bottom: 1.5rem;
+    }
+  }
+
+  /* A row that scrolls sideways instead of wrapping, with no visible bar.
+     Wrapping a chip row leaves one orphan on a second line and a dead gap. */
+  .no-scrollbar {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+
   .glass {
     background: color-mix(in srgb, var(--surface) 80%, transparent);
     backdrop-filter: blur(20px) saturate(180%);

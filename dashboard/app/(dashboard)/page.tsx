@@ -1,16 +1,15 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { Search, X, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Search, ChevronLeft, ChevronRight } from 'lucide-react';
 import clsx from 'clsx';
 import { api } from '@/lib/api';
 import { DEFAULT_SCAN_PLATFORMS, PLATFORM_LABELS, platformLabel } from '@/lib/platforms';
 import type { Job } from '@/lib/types';
 import { ScanBar } from '@/components/ScanBar';
-import { JobRow } from '@/components/JobRow';
+import { JobCard, JobRow } from '@/components/JobRow';
 import { Button } from '@/components/ui/Button';
-import { Input, Label, Textarea } from '@/components/ui/Input';
+import { Input } from '@/components/ui/Input';
 
 const JOBS_PER_PAGE = 20;
 const MANUAL_APPLY_STATUSES = new Set(['failed', 'needs_review', 'skipped']);
@@ -19,20 +18,14 @@ export default function JobsPage() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [loading, setLoading] = useState(true);
   const [scanning, setScanning] = useState(false);
+  const [scanError, setScanError] = useState('');
+  const [scanStalled, setScanStalled] = useState(false);
   const [applying, setApplying] = useState(false);
   const [search, setSearch] = useState('');
   const [filterPlatform, setFilterPlatform] = useState('');
   const [sortOrder, setSortOrder] = useState<'desc' | 'asc'>('desc');
   const [sortBy, setSortBy] = useState<'score' | 'date'>('score');
   const [currentPage, setCurrentPage] = useState(1);
-  const [addOpen, setAddOpen] = useState(false);
-  const [manualForm, setManualForm] = useState({
-    title: '',
-    company: '',
-    url: '',
-    jd_text: '',
-    location: '',
-  });
 
   const loadJobs = useCallback(async (quiet = false) => {
     if (!quiet) setLoading(true);
@@ -47,7 +40,13 @@ export default function JobsPage() {
 
   useEffect(() => {
     loadJobs();
-    api.getScanStatus().then((s) => setScanning(!!s.running)).catch(() => {});
+    api
+      .getScanStatus()
+      .then((s) => {
+        setScanning(!!s.running);
+        setScanStalled(!!s.stalled);
+      })
+      .catch(() => {});
     api.getApplyStatus().then((s) => setApplying(!!s.running)).catch(() => {});
   }, [loadJobs]);
 
@@ -69,7 +68,13 @@ export default function JobsPage() {
       try {
         const status = await api.getScanStatus();
         await loadJobs(true);
-        if (!status.running) setScanning(false);
+        setScanStalled(!!status.stalled);
+        if (!status.running) {
+          setScanning(false);
+          setScanStalled(false);
+          const failure = status.last_result?.error;
+          if (typeof failure === 'string') setScanError(failure);
+        }
       } catch {}
     }, 3000);
     return () => clearInterval(id);
@@ -77,27 +82,43 @@ export default function JobsPage() {
 
   const handleScan = async () => {
     if (scanning) return;
+    setScanError('');
     try {
       setScanning(true);
       setCurrentPage(1);
       await api.startScan();
-    } catch {
+    } catch (err) {
+      // Swallowing this is what made the button look dead: a scan already
+      // running answers 409, the state reverted, and nothing said why.
+      const message = err instanceof Error ? err.message : 'Could not start the scan';
       setScanning(false);
+      setScanError(message);
     }
   };
 
   const handleStopScan = async () => {
     if (!scanning) return;
     try {
-      await api.stopScan();
+      const result = await api.stopScan();
+      if (!result.running) {
+        setScanning(false);
+        setScanError('');
+      }
     } catch (err) {
-      alert(err instanceof Error ? err.message : 'Could not stop scan');
+      setScanError(err instanceof Error ? err.message : 'Could not stop scan');
     }
   };
 
-  const handleStatusChange = async (id: string, status: string) => {
-    await api.updateJobStatus(id, status);
-    setJobs((prev) => prev.map((j) => (j.id === id ? { ...j, status: status as Job['status'] } : j)));
+  /** Abandon a scan that has stopped responding, so a new one can start. */
+  const handleForceStopScan = async () => {
+    try {
+      await api.stopScan(true);
+      setScanning(false);
+      setScanStalled(false);
+      setScanError('');
+    } catch (err) {
+      setScanError(err instanceof Error ? err.message : 'Could not abandon the scan');
+    }
   };
 
   const handleVisit = async (id: string) => {
@@ -112,11 +133,21 @@ export default function JobsPage() {
     }
   };
 
-  const handleAddManual = async () => {
-    await api.addManualJob(manualForm);
-    setAddOpen(false);
-    setManualForm({ title: '', company: '', url: '', jd_text: '', location: '' });
-    loadJobs();
+  const handleRemoveVisited = async () => {
+    const seen = jobs.filter((j) => j.visited_at).length;
+    if (!seen) {
+      setScanError('No visited jobs to remove.');
+      return;
+    }
+    if (!confirm(`Remove ${seen} job${seen === 1 ? '' : 's'} you have already opened?`)) return;
+    try {
+      const { removed_count } = await api.purgeVisitedJobs();
+      setCurrentPage(1);
+      await loadJobs();
+      setScanError(removed_count ? '' : 'Nothing was removed.');
+    } catch (err) {
+      setScanError(err instanceof Error ? err.message : 'Could not remove visited jobs');
+    }
   };
 
   const handleClearJobs = async () => {
@@ -225,10 +256,12 @@ export default function JobsPage() {
 
   return (
     <>
-      <header className="glass sticky top-0 z-20 border-b border-[var(--border)] px-8 py-5">
-        <div className="flex items-center justify-between gap-4">
-          <div>
-            <h1 className="text-2xl font-semibold tracking-tight text-[var(--text-primary)]">Jobs</h1>
+      <header className="page-x glass sticky top-0 z-20 border-b border-[var(--border)] py-4 sm:py-5">
+        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3">
+          <div className="min-w-0">
+            <h1 className="text-xl font-semibold tracking-tight text-[var(--text-primary)] sm:text-2xl">
+              Jobs
+            </h1>
             <p className="mt-0.5 text-sm text-[var(--text-muted)]">
               {jobs.length} total
               {pendingCount > 0 && ` · ${pendingCount} pending`}
@@ -242,19 +275,55 @@ export default function JobsPage() {
             scanning={scanning}
             applying={applying}
             onScan={handleScan}
-            onAdd={() => setAddOpen(true)}
+            onRemoveVisited={handleRemoveVisited}
             onClear={handleClearJobs}
             onApplyAll={handleApplyAll}
             onStopApply={handleStopApply}
             onStopScan={handleStopScan}
           />
         </div>
+
+        {(scanError || scanStalled) && (
+          <div
+            className={clsx(
+              'mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-2 text-sm',
+              scanStalled
+                ? 'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300'
+                : 'border-red-500/40 bg-red-500/10 text-red-700 dark:text-red-300'
+            )}
+          >
+            <span>
+              {scanStalled
+                ? 'This scan has stopped responding. Abandon it to start a new one.'
+                : scanError}
+            </span>
+            <div className="flex shrink-0 items-center gap-2">
+              {scanStalled && (
+                <button
+                  type="button"
+                  onClick={handleForceStopScan}
+                  className="rounded-md border border-current px-2 py-1 text-xs font-medium"
+                >
+                  Abandon scan
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setScanError('')}
+                className="text-xs opacity-70 hover:opacity-100"
+                aria-label="Dismiss"
+              >
+                ✕
+              </button>
+            </div>
+          </div>
+        )}
       </header>
 
-      <div className="flex-1 overflow-y-auto px-8 py-6">
+      <div className="page-x pb-nav flex-1 overflow-y-auto pt-5 sm:pt-6">
         <div className="mx-auto max-w-6xl space-y-4">
-          <div className="flex flex-wrap items-center gap-3">
-            <div className="relative min-w-[220px] flex-1">
+          <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+            <div className="relative w-full min-w-0 sm:w-auto sm:min-w-[220px] sm:flex-1">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--text-muted)]" />
               <Input
                 value={search}
@@ -266,7 +335,7 @@ export default function JobsPage() {
             <select
               value={sortBy}
               onChange={(e) => setSortBy(e.target.value as 'score' | 'date')}
-              className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5 text-sm text-[var(--text-secondary)] outline-none"
+              className="min-w-0 flex-1 rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5 text-sm text-[var(--text-secondary)] outline-none sm:flex-none"
             >
               <option value="score">Best match</option>
               <option value="date">Date</option>
@@ -274,19 +343,19 @@ export default function JobsPage() {
             <select
               value={sortOrder}
               onChange={(e) => setSortOrder(e.target.value as 'desc' | 'asc')}
-              className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5 text-sm text-[var(--text-secondary)] outline-none"
+              className="min-w-0 flex-1 rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5 text-sm text-[var(--text-secondary)] outline-none sm:flex-none"
             >
               <option value="desc">{sortBy === 'score' ? 'Highest score' : 'Newest'}</option>
               <option value="asc">{sortBy === 'score' ? 'Lowest score' : 'Oldest'}</option>
             </select>
           </div>
 
-          <div className="flex flex-wrap gap-2">
+          <div className="no-scrollbar -mx-4 flex gap-2 overflow-x-auto px-4 pb-0.5 sm:mx-0 sm:flex-wrap sm:overflow-visible sm:px-0">
             <button
               type="button"
               onClick={() => setFilterPlatform('')}
               className={clsx(
-                'rounded-full px-3 py-1 text-xs font-medium transition-colors',
+                'shrink-0 whitespace-nowrap rounded-full px-3.5 py-2 text-xs font-medium transition-colors sm:px-3 sm:py-1.5',
                 !filterPlatform
                   ? 'bg-[var(--text-primary)] text-[var(--bg)]'
                   : 'bg-[var(--surface-2)] text-[var(--text-secondary)] hover:bg-[var(--surface-3)]',
@@ -300,7 +369,7 @@ export default function JobsPage() {
                 type="button"
                 onClick={() => setFilterPlatform(p)}
                 className={clsx(
-                  'rounded-full px-3 py-1 text-xs font-medium transition-colors',
+                  'shrink-0 whitespace-nowrap rounded-full px-3.5 py-2 text-xs font-medium transition-colors sm:px-3 sm:py-1.5',
                   filterPlatform === p
                     ? 'bg-[var(--text-primary)] text-[var(--bg)]'
                     : 'bg-[var(--surface-2)] text-[var(--text-secondary)] hover:bg-[var(--surface-3)]',
@@ -311,29 +380,42 @@ export default function JobsPage() {
             ))}
           </div>
 
-          <div className="overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface)] shadow-sm">
+          <div className="md:overflow-hidden md:rounded-2xl md:border md:border-[var(--border)] md:bg-[var(--surface)] md:shadow-sm">
             {loading ? (
-              <div className="p-16 text-center text-sm text-[var(--text-muted)]">Loading…</div>
+              <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-10 text-center text-sm text-[var(--text-muted)] md:rounded-none md:border-0 md:p-16">Loading…</div>
             ) : queueJobs.length === 0 && manualJobs.length === 0 ? (
-              <div className="p-16 text-center text-sm text-[var(--text-muted)]">
+              <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-10 text-center text-sm text-[var(--text-muted)] md:rounded-none md:border-0 md:p-16">
                 No jobs yet. Run a scan to discover roles.
               </div>
             ) : queueJobs.length === 0 ? (
-              <div className="p-16 text-center text-sm text-[var(--text-muted)]">
+              <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-10 text-center text-sm text-[var(--text-muted)] md:rounded-none md:border-0 md:p-16">
                 No jobs left in the auto-apply queue. Check Manual apply below.
               </div>
             ) : (
               <>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left">
+                {/* Cards on phones and iPad portrait, the table from md up. */}
+                <div className="space-y-2.5 md:hidden">
+                  {pageJobs.map((job, i) => (
+                    <JobCard
+                      key={job.id}
+                      job={job}
+                      index={i}
+                      applying={applying && (job.apply_status === 'applying' || job.apply_status === 'queued')}
+                      applyBusy={applying}
+                      onVisit={handleVisit}
+                      onApply={handleApply}
+                    />
+                  ))}
+                </div>
+                <div className="hidden overflow-x-auto md:block">
+                  <table className="w-full table-fixed text-left">
                     <thead>
                       <tr className="border-b border-[var(--border)] text-xs font-medium text-[var(--text-muted)]">
                         <th className="px-4 py-3">Role</th>
-                        <th className="px-4 py-3">Source</th>
-                        <th className="px-4 py-3 text-center">Score</th>
-                        <th className="px-4 py-3">Status</th>
-                        <th className="px-4 py-3">Found</th>
-                        <th className="px-4 py-3" />
+                        <th className="w-28 px-4 py-3 lg:w-32">Source</th>
+                        <th className="w-16 px-4 py-3 text-center lg:w-20">Score</th>
+                        <th className="w-16 px-4 py-3 lg:w-20">Found</th>
+                        <th className="w-24 px-4 py-3" />
                       </tr>
                     </thead>
                     <tbody>
@@ -344,7 +426,6 @@ export default function JobsPage() {
                           index={i}
                           applying={applying && (job.apply_status === 'applying' || job.apply_status === 'queued')}
                           applyBusy={applying}
-                          onStatusChange={handleStatusChange}
                           onVisit={handleVisit}
                           onApply={handleApply}
                         />
@@ -352,7 +433,7 @@ export default function JobsPage() {
                     </tbody>
                   </table>
                 </div>
-                <div className="flex items-center justify-between border-t border-[var(--border)] px-4 py-3 text-sm text-[var(--text-muted)]">
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-2 px-1 py-1 text-sm text-[var(--text-muted)] md:mt-0 md:border-t md:border-[var(--border)] md:px-4 md:py-3">
                   <span>
                     {(currentPage - 1) * JOBS_PER_PAGE + 1}–{Math.min(currentPage * JOBS_PER_PAGE, queueJobs.length)} of{' '}
                     {queueJobs.length}
@@ -388,17 +469,30 @@ export default function JobsPage() {
                   Auto-fill could not finish these. Open the posting and complete them yourself, or retry apply.
                 </p>
               </div>
-              <div className="overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface)] shadow-sm">
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left">
+              <div className="md:overflow-hidden md:rounded-2xl md:border md:border-[var(--border)] md:bg-[var(--surface)] md:shadow-sm">
+                <div className="space-y-2.5 md:hidden">
+                  {manualJobs.map((job, i) => (
+                    <JobCard
+                      key={job.id}
+                      job={job}
+                      index={i}
+                      applying={applying && (job.apply_status === 'applying' || job.apply_status === 'queued')}
+                      applyBusy={applying}
+                      alwaysShowOpen
+                      onVisit={handleVisit}
+                      onApply={handleApply}
+                    />
+                  ))}
+                </div>
+                <div className="hidden overflow-x-auto md:block">
+                  <table className="w-full table-fixed text-left">
                     <thead>
                       <tr className="border-b border-[var(--border)] text-xs font-medium text-[var(--text-muted)]">
                         <th className="px-4 py-3">Role</th>
-                        <th className="px-4 py-3">Source</th>
-                        <th className="px-4 py-3 text-center">Score</th>
-                        <th className="px-4 py-3">Status</th>
-                        <th className="px-4 py-3">Found</th>
-                        <th className="px-4 py-3" />
+                        <th className="w-28 px-4 py-3 lg:w-32">Source</th>
+                        <th className="w-16 px-4 py-3 text-center lg:w-20">Score</th>
+                        <th className="w-16 px-4 py-3 lg:w-20">Found</th>
+                        <th className="w-24 px-4 py-3" />
                       </tr>
                     </thead>
                     <tbody>
@@ -410,7 +504,6 @@ export default function JobsPage() {
                           applying={applying && (job.apply_status === 'applying' || job.apply_status === 'queued')}
                           applyBusy={applying}
                           alwaysShowOpen
-                          onStatusChange={handleStatusChange}
                           onVisit={handleVisit}
                           onApply={handleApply}
                         />
@@ -424,62 +517,6 @@ export default function JobsPage() {
         </div>
       </div>
 
-      <AnimatePresence>
-        {addOpen && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4 backdrop-blur-sm sm:items-center"
-            onClick={() => setAddOpen(false)}
-          >
-            <motion.div
-              initial={{ opacity: 0, y: 24 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: 24 }}
-              transition={{ type: 'spring', damping: 28, stiffness: 320 }}
-              className="w-full max-w-lg rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-6 shadow-xl"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div className="mb-5 flex items-center justify-between">
-                <h2 className="text-lg font-semibold text-[var(--text-primary)]">Add job</h2>
-                <button
-                  type="button"
-                  onClick={() => setAddOpen(false)}
-                  className="rounded-lg p-2 text-[var(--text-muted)] hover:bg-[var(--surface-2)]"
-                >
-                  <X className="h-4 w-4" />
-                </button>
-              </div>
-              <div className="space-y-4">
-                {(['title', 'company', 'url', 'location'] as const).map((field) => (
-                  <div key={field}>
-                    <Label>{field.charAt(0).toUpperCase() + field.slice(1)}</Label>
-                    <Input
-                      value={manualForm[field]}
-                      onChange={(e) => setManualForm((p) => ({ ...p, [field]: e.target.value }))}
-                    />
-                  </div>
-                ))}
-                <div>
-                  <Label>Description</Label>
-                  <Textarea
-                    rows={4}
-                    value={manualForm.jd_text}
-                    onChange={(e) => setManualForm((p) => ({ ...p, jd_text: e.target.value }))}
-                  />
-                </div>
-              </div>
-              <div className="mt-6 flex justify-end gap-2">
-                <Button variant="secondary" onClick={() => setAddOpen(false)}>
-                  Cancel
-                </Button>
-                <Button onClick={handleAddManual}>Save</Button>
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
     </>
   );
 }

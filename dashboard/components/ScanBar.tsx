@@ -1,6 +1,6 @@
 'use client';
 
-import { RefreshCw, Plus, Trash2, Send, Square } from 'lucide-react';
+import { RefreshCw, EyeOff, Trash2, Send, Square } from 'lucide-react';
 import clsx from 'clsx';
 import { Button } from '@/components/ui/Button';
 
@@ -8,7 +8,7 @@ interface ScanBarProps {
   scanning: boolean;
   applying?: boolean;
   onScan: () => void;
-  onAdd: () => void;
+  onRemoveVisited: () => void;
   onClear: () => void;
   onApplyAll?: () => void;
   onStopApply?: () => void;
@@ -19,21 +19,31 @@ export function ScanBar({
   scanning,
   applying,
   onScan,
-  onAdd,
+  onRemoveVisited,
   onClear,
   onApplyAll,
   onStopApply,
   onStopScan,
 }: ScanBarProps) {
   return (
-    <div className="flex items-center gap-2">
-      <Button variant="secondary" size="sm" onClick={onClear}>
+    // Wraps instead of overflowing, and right-aligned so the primary action
+    // stays nearest the thumb when the row breaks onto a second line.
+    // Below `sm` the secondary buttons keep their icon and drop the label —
+    // four labelled buttons do not fit a 390px screen, and an icon with an
+    // aria-label reads better than a squashed row.
+    <div className="flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto">
+      <Button variant="secondary" size="sm" onClick={onClear} aria-label="Clear discovered jobs">
         <Trash2 className="h-4 w-4" />
-        Clear
+        <span className="hidden sm:inline">Clear</span>
       </Button>
-      <Button variant="secondary" size="sm" onClick={onAdd}>
-        <Plus className="h-4 w-4" />
-        Add
+      <Button
+        variant="secondary"
+        size="sm"
+        onClick={onRemoveVisited}
+        aria-label="Remove jobs you have already opened"
+      >
+        <EyeOff className="h-4 w-4" />
+        <span className="hidden sm:inline">Remove visited</span>
       </Button>
       {scanning && onStopScan && (
         <Button variant="danger" size="sm" onClick={onStopScan}>

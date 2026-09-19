@@ -124,7 +124,7 @@ export default function AutopilotPage() {
   };
 
   return (
-    <div className="mx-auto max-w-6xl space-y-5 px-8 py-6 pb-16">
+    <div className="page-x mx-auto max-w-6xl space-y-5 pb-16 pt-5 sm:pt-6">
       {/* running banner */}
       {status?.running && (
         <div className="flex items-center gap-3 rounded-2xl border border-[var(--accent)] bg-[var(--surface)] px-5 py-3.5">

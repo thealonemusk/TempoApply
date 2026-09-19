@@ -73,12 +73,12 @@ export default function AnalyticsPage() {
 
   return (
     <>
-      <header className="glass sticky top-0 z-20 border-b border-[var(--border)] px-8 py-5">
+      <header className="page-x glass sticky top-0 z-20 border-b border-[var(--border)] py-4 sm:py-5">
         <h1 className="text-2xl font-semibold tracking-tight text-[var(--text-primary)]">Analytics</h1>
         <p className="mt-0.5 text-sm text-[var(--text-muted)]">Pipeline overview</p>
       </header>
 
-      <div className="flex-1 overflow-y-auto px-8 py-6">
+      <div className="page-x pb-nav flex-1 overflow-y-auto pt-5 sm:pt-6">
         <div className="mx-auto max-w-5xl space-y-6">
           {loading ? (
             <div className="py-24 text-center text-sm text-[var(--text-muted)]">Loading…</div>

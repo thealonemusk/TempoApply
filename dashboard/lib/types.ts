@@ -98,4 +98,8 @@ export interface ApplicantProfile {
 export interface ScanStatus {
   running: boolean;
   last_result: Record<string, unknown> | null;
+  /** Seconds since this scan started, 0 when idle. */
+  elapsed_seconds?: number;
+  /** Running far longer than any real scan takes — it is wedged, not slow. */
+  stalled?: boolean;
 }
