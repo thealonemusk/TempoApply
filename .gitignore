@@ -4,6 +4,7 @@ config/.env
 
 # Python
 __pycache__
+venv
 .venv
 *.db
 # Backend
@@ -49,6 +50,6 @@ tools/
 resumes/tailored/
 backend/resume/testdata/*.pdf
 backend/resume/testdata/*.log
-
+backend/venv/
 # per-tenant Workday logins (plaintext, local only)
 config/workday_accounts.json

@@ -1,9 +1,12 @@
 import type { Metadata, Viewport } from 'next';
 import './globals.css';
+import { ThemeProvider } from '@/components/ThemeProvider';
 
 export const metadata: Metadata = {
-  title: 'TempoApply — AI Job Application Agent',
-  description: 'Your AI-powered job application command centre',
+  title: 'TempoApply',
+  description: 'Job discovery for early-career engineers',
+  // No `icons` override: the merge removed public/vercel.png, which the old
+  // override pointed at. app/favicon.ico is picked up automatically.
 };
 
 // `viewportFit: 'cover'` lets the page paint into the iPhone's safe areas; the
@@ -17,9 +20,12 @@ export const viewport: Viewport = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
-      <body className="min-h-screen bg-newsprint text-ink antialiased">
-        {children}
+    // `suppressHydrationWarning` is required by next-themes: it sets the theme
+    // class on <html> before React hydrates, so server and client markup
+    // differ by design on the first paint.
+    <html lang="en" suppressHydrationWarning>
+      <body className="min-h-screen antialiased">
+        <ThemeProvider>{children}</ThemeProvider>
       </body>
     </html>
   );
