@@ -2,31 +2,54 @@
 FastAPI REST API for TempoApply dashboard.
 """
 import asyncio
-import json
+import sys
 from pathlib import Path
 from typing import List, Optional
-from datetime import datetime
+from datetime import datetime, timedelta
 
-from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, BackgroundTasks, Query
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+
+from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, Query, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlalchemy.orm import Session
 from loguru import logger
 
-from backend.db.models import Job, Application, BaseResume, get_db, init_db
+from backend.job_freshness import JOB_FRESHNESS_HOURS
+from backend.db.models import Job, get_db, init_db
+from backend import seen_ledger
 from backend.config import settings
-from backend.ai.latex_parser import parse_tex_file, tex_to_text
+from backend.platforms import DEFAULT_SCAN_PLATFORMS, SCAN_PLATFORMS, ALL_PLATFORMS
+from backend.applier.ats import detect_ats
+from backend.applier.profile import RESUMES_DIR, load_profile, save_profile
+from backend.api.autofill import router as autofill_router
+from backend.api.autopilot import router as autopilot_router
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+
+
+def _env_path() -> Path:
+    path = PROJECT_ROOT / "config" / ".env"
+    if not path.exists():
+        path = PROJECT_ROOT / ".env"
+    return path
 
 app = FastAPI(title="TempoApply API", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    # The browser extension's service worker calls the API from a
+    # chrome-extension:// origin, which changes with every unpacked install.
+    allow_origin_regex=r"^(chrome|moz)-extension://.*$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(autofill_router)
+app.include_router(autopilot_router)
 
 
 @app.on_event("startup")
@@ -55,37 +78,37 @@ class JobOut(BaseModel):
     recruiter_name: str
     recruiter_profile: str
     status: str
+    ats_type: Optional[str] = ""
+    apply_status: Optional[str] = ""
+    apply_error: Optional[str] = ""
     discovered_at: Optional[datetime]
+    visited_at: Optional[datetime]
     applied_at: Optional[datetime]
 
     class Config:
         from_attributes = True
 
-
-class ApplicationOut(BaseModel):
-    id: str
-    job_id: str
-    tailored_resume_path: str
-    tailored_resume_text: str
-    cold_email: str
-    linkedin_message: str
-    cover_letter: str
-    notes: str
-    created_at: Optional[datetime]
-
-    class Config:
-        from_attributes = True
+    @field_validator("ats_type", "apply_status", "apply_error", mode="before")
+    @classmethod
+    def blank_apply_fields(cls, value):
+        return value or ""
 
 
 class ScanRequest(BaseModel):
-    platforms: List[str] = ["linkedin", "indeed", "naukri", "instahyre"]
-    max_jobs_per_platform: int = 20
+    platforms: List[str] = list(DEFAULT_SCAN_PLATFORMS)
+    max_jobs_per_platform: int = 400
     headless: bool = True
 
 
 class StatusUpdate(BaseModel):
     status: str
     notes: Optional[str] = None
+
+
+class ApplyRequest(BaseModel):
+    job_ids: Optional[List[str]] = None
+    auto_submit: bool = True
+    headless: bool = False
 
 
 class ManualJobRequest(BaseModel):
@@ -104,9 +127,10 @@ def get_jobs(
     status: Optional[str] = Query(None),
     platform: Optional[str] = Query(None),
     min_score: Optional[float] = Query(None),
+    max_age_hours: int = Query(JOB_FRESHNESS_HOURS, ge=1),
     db: Session = Depends(get_db),
 ):
-    """Get all jobs with optional filters."""
+    """Get all jobs with optional filters. Hides stale discovered/scored jobs by default."""
     query = db.query(Job)
     if status:
         query = query.filter(Job.status == status)
@@ -114,7 +138,26 @@ def get_jobs(
         query = query.filter(Job.platform == platform)
     if min_score is not None:
         query = query.filter(Job.relevance_score >= min_score)
-    return query.order_by(Job.relevance_score.desc()).all()
+
+    cutoff = datetime.utcnow() - timedelta(hours=max_age_hours)
+    query = query.filter(
+        (Job.status.notin_(["discovered", "scored"])) | (Job.discovered_at >= cutoff)
+    )
+    jobs = query.order_by(Job.relevance_score.desc()).all()
+    dirty = False
+    for job in jobs:
+        if not job.ats_type:
+            job.ats_type = detect_ats(job.url)
+            dirty = True
+        if job.apply_status is None:
+            job.apply_status = ""
+            dirty = True
+        if job.apply_error is None:
+            job.apply_error = ""
+            dirty = True
+    if dirty:
+        db.commit()
+    return jobs
 
 
 @app.get("/api/jobs/{job_id}", response_model=JobOut)
@@ -122,23 +165,20 @@ def get_job(job_id: str, db: Session = Depends(get_db)):
     job = db.query(Job).filter(Job.id == job_id).first()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
+    if not job.ats_type:
+        job.ats_type = detect_ats(job.url)
+        db.commit()
     return job
 
 
 @app.post("/api/jobs/manual")
 def add_manual_job(req: ManualJobRequest, db: Session = Depends(get_db)):
-    """Add a job manually for analysis."""
-    from backend.ai.analyzer import analyze_jd
-    from backend.ai.latex_parser import parse_tex_file
-    from backend.pipeline import get_base_resume_text
+    """Add a job manually."""
     import uuid
 
     existing = db.query(Job).filter(Job.url == req.url).first()
     if existing:
         raise HTTPException(status_code=409, detail="Job with this URL already exists")
-
-    base_text = get_base_resume_text()
-    analysis = analyze_jd(req.jd_text, base_text, req.title)
 
     job = Job(
         id=str(uuid.uuid4()),
@@ -148,17 +188,18 @@ def add_manual_job(req: ManualJobRequest, db: Session = Depends(get_db)):
         url=req.url,
         location=req.location,
         jd_text=req.jd_text,
-        relevance_score=analysis.get("score", 0.0),
-        fit_reason=analysis.get("fit_reason", ""),
-        missing_skills=json.dumps(analysis.get("missing_skills", [])),
-        seniority_level=analysis.get("seniority_level", "mid"),
-        is_engineering_role=analysis.get("is_engineering_role", True),
-        status="scored",
+        relevance_score=100.0,
+        fit_reason="Manually added job posting",
+        missing_skills="[]",
+        seniority_level="entry",
+        is_engineering_role=True,
+        status="discovered",
+        ats_type=detect_ats(req.url),
     )
     db.add(job)
     db.commit()
     db.refresh(job)
-    return {"job_id": job.id, "score": job.relevance_score, "message": "Job added and analyzed"}
+    return {"job_id": job.id, "score": job.relevance_score, "message": "Job added"}
 
 
 @app.patch("/api/jobs/{job_id}/status")
@@ -175,11 +216,168 @@ def update_job_status(job_id: str, update: StatusUpdate, db: Session = Depends(g
     return {"success": True, "status": update.status}
 
 
+@app.post("/api/jobs/{job_id}/visit")
+def mark_job_visited(job_id: str, db: Session = Depends(get_db)):
+    """Mark a job as visited when the user opens the posting link."""
+    job = db.query(Job).filter(Job.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if not job.visited_at:
+        job.visited_at = datetime.utcnow()
+        db.commit()
+    return {"success": True, "visited_at": job.visited_at}
+
+
+class UnblockRequest(BaseModel):
+    url: str
+
+
+CLEARABLE_STATUSES = ["discovered", "scored", "tailored", "ignored", "rejected"]
+
+
+@app.delete("/api/jobs/clear")
+def clear_discovered_jobs(
+    include_applied: bool = Query(False),
+    db: Session = Depends(get_db),
+):
+    """
+    Empty the working queue.
+
+    Two things this deliberately does NOT do any more:
+
+    * It no longer marks what it removes as "dismissed". Dismissed is a
+      blocking status, so tidying the dashboard was quietly blacklisting every
+      job on it — after a few rounds a scan finding hundreds of postings could
+      insert twenty, the rest being permanently blocked. Cleared jobs are now
+      recorded as "cleared", which is observable but not blocking, so a live
+      posting can be surfaced again by the next scan.
+    * It does not touch a job that is mid-process (applying, interviewing, an
+      offer) — only finished or never-started ones.
+
+    `include_applied` also removes rows already applied to. The application
+    itself stays recorded in the seen ledger, which is what stops the job
+    being offered again, but the `jobs` row and its Application detail go.
+    """
+    statuses = list(CLEARABLE_STATUSES)
+    if include_applied:
+        statuses.append("applied")
+
+    jobs_to_delete = db.query(Job).filter(Job.status.in_(statuses)).all()
+
+    # An applied row keeps its "applied" ledger status; only the rest become
+    # "cleared". Downgrading applied to cleared would offer the job back.
+    applied_count = 0
+    tidied = []
+    for job in jobs_to_delete:
+        if job.status == "applied" or job.apply_status == "applied":
+            applied_count += 1
+            seen_ledger.mark(
+                db,
+                url=job.url,
+                status="applied",
+                reason="cleared from the dashboard after applying",
+                title=job.title or "",
+                company=job.company or "",
+                platform=job.platform or "",
+            )
+        else:
+            tidied.append(job)
+    seen_ledger.mark_jobs(db, tidied, "cleared", "cleared from the dashboard")
+
+    deleted_count = 0
+    for job in jobs_to_delete:
+        if job.application:
+            db.delete(job.application)
+        db.delete(job)
+        deleted_count += 1
+    db.commit()
+    return {
+        "success": True,
+        "deleted_count": deleted_count,
+        "applied_removed": applied_count,
+    }
+
+
+@app.post("/api/jobs/purge-visited")
+def purge_visited(db: Session = Depends(get_db)):
+    """
+    Drop every job already opened, so the queue only holds what is still to do.
+
+    Applied / interviewing / offer rows are left alone by
+    `purge_visited_jobs` — opening a posting you then applied to must not
+    delete the record of the application.
+    """
+    from backend.pipeline import purge_visited_jobs
+
+    removed = purge_visited_jobs(db)
+    return {"success": True, "removed_count": removed}
+
+
+@app.post("/api/jobs/purge-stale")
+def purge_stale_jobs(
+    max_age_hours: int = Query(JOB_FRESHNESS_HOURS, ge=1),
+    db: Session = Depends(get_db),
+):
+    """Delete discovered/scored jobs older than max_age_hours."""
+    from backend.pipeline import purge_stale_discovered_jobs
+
+    purged_count = purge_stale_discovered_jobs(db, max_age_hours=max_age_hours)
+    return {"success": True, "purged_count": purged_count}
+
+
+@app.post("/api/jobs/purge-experienced")
+def purge_experienced_jobs(db: Session = Depends(get_db)):
+    """Purge jobs that fail experience, frontend, or India-location filters."""
+    from backend.scrapers.filter_utils import is_career_listing_eligible, passes_hard_filters
+
+    all_jobs = db.query(Job).all()
+    purged_count = 0
+    for job in all_jobs:
+        if job.status in {"applied", "interviewing", "offer"}:
+            continue
+        job_dict = {
+            "title": job.title,
+            "company": job.company,
+            "location": job.location,
+            "experience_required": job.experience_required,
+            "jd_text": job.jd_text,
+            "platform": job.platform,
+        }
+        is_valid, _ = passes_hard_filters(job_dict, max_years=settings.experience_years)
+        if is_valid and job.platform == "company_careers":
+            is_valid, _ = is_career_listing_eligible(job_dict)
+        if not is_valid:
+            seen_ledger.mark(
+                db,
+                url=job.url,
+                status="filtered",
+                reason="failed hard filters on purge",
+                title=job.title or "",
+                company=job.company or "",
+                platform=job.platform or "",
+            )
+            if job.application:
+                db.delete(job.application)
+            db.delete(job)
+            purged_count += 1
+    db.commit()
+    return {"success": True, "purged_count": purged_count}
+
+
 @app.delete("/api/jobs/{job_id}")
 def delete_job(job_id: str, db: Session = Depends(get_db)):
     job = db.query(Job).filter(Job.id == job_id).first()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
+    seen_ledger.mark(
+        db,
+        url=job.url,
+        status="dismissed",
+        reason="deleted by user",
+        title=job.title or "",
+        company=job.company or "",
+        platform=job.platform or "",
+    )
     if job.application:
         db.delete(job.application)
     db.delete(job)
@@ -187,19 +385,72 @@ def delete_job(job_id: str, db: Session = Depends(get_db)):
     return {"success": True}
 
 
+# --- Seen ledger -------------------------------------------------------------
+
+
+@app.get("/api/seen/stats")
+def seen_stats(db: Session = Depends(get_db)):
+    """Counts by ledger status - how many jobs future scans will skip, and why."""
+    return seen_ledger.stats(db)
+
+
+@app.post("/api/seen/unblock")
+def seen_unblock(payload: UnblockRequest, db: Session = Depends(get_db)):
+    """Let a job be rediscovered after it was visited, dismissed, or expired."""
+    if not seen_ledger.unblock(db, payload.url):
+        raise HTTPException(status_code=404, detail="URL not in the seen ledger")
+    return {"success": True, "url": payload.url}
+
+
 # ─── Scan Pipeline ───────────────────────────────────────────────────────────
 
-_scan_status = {"running": False, "last_result": None}
+_scan_status = {"running": False, "last_result": None, "started_at": None}
+
+# A scan that has been "running" for longer than this is wedged, not slow. No
+# scraper has a hard timeout of its own, so without this a single hung request
+# leaves `running` stuck True for the life of the process — and every later
+# Scan click is refused with a 409 the user never sees.
+SCAN_STALL_SECONDS = 30 * 60
+
+
+def _scan_runtime() -> float:
+    started = _scan_status.get("started_at")
+    if not started:
+        return 0.0
+    return (datetime.utcnow() - started).total_seconds()
+
+
+def _scan_is_stalled() -> bool:
+    return bool(_scan_status["running"]) and _scan_runtime() > SCAN_STALL_SECONDS
 
 
 @app.post("/api/scan")
 async def start_scan(req: ScanRequest, background_tasks: BackgroundTasks):
     """Trigger a background job scan across platforms."""
-    if _scan_status["running"]:
-        raise HTTPException(status_code=409, detail="Scan already running")
+    if _scan_status["running"] and not _scan_is_stalled():
+        raise HTTPException(
+            status_code=409,
+            detail=f"A scan has been running for {int(_scan_runtime())}s. "
+                   f"Stop it first, or wait for it to finish.",
+        )
+    if _scan_is_stalled():
+        logger.warning(
+            f"Previous scan wedged after {int(_scan_runtime())}s — starting a new one"
+        )
+
+    # Claimed here, not inside the task. FastAPI runs background tasks *after*
+    # the response is sent, so setting it in there leaves a window where the
+    # POST has answered "started" but /api/scan/status still says False — the
+    # dashboard polls, sees False, and drops straight out of its scanning
+    # state. It also made the 409 guard above racy against a double click.
+    _scan_status["running"] = True
+    _scan_status["last_result"] = None
+    _scan_status["started_at"] = datetime.utcnow()
 
     async def do_scan():
-        _scan_status["running"] = True
+        from backend.scan_control import clear_stop
+
+        clear_stop()
         try:
             from backend.pipeline import run_scan_pipeline
             result = await run_scan_pipeline(
@@ -213,6 +464,7 @@ async def start_scan(req: ScanRequest, background_tasks: BackgroundTasks):
             _scan_status["last_result"] = {"error": str(e)}
         finally:
             _scan_status["running"] = False
+            _scan_status["started_at"] = None
 
     background_tasks.add_task(do_scan)
     return {"message": "Scan started", "running": True}
@@ -220,98 +472,142 @@ async def start_scan(req: ScanRequest, background_tasks: BackgroundTasks):
 
 @app.get("/api/scan/status")
 def get_scan_status():
-    return _scan_status
-
-
-# ─── Application Materials ───────────────────────────────────────────────────
-
-@app.post("/api/applications/{job_id}/generate")
-def generate_materials(job_id: str, background_tasks: BackgroundTasks):
-    """Generate tailored resume + outreach materials for a job."""
-    def do_generate():
-        from backend.pipeline import generate_application_materials
-        generate_application_materials(job_id)
-
-    background_tasks.add_task(do_generate)
-    return {"message": "Generating materials...", "job_id": job_id}
-
-
-@app.get("/api/applications/{job_id}", response_model=ApplicationOut)
-def get_application(job_id: str, db: Session = Depends(get_db)):
-    app_record = db.query(Application).filter(Application.job_id == job_id).first()
-    if not app_record:
-        raise HTTPException(status_code=404, detail="No application materials yet")
-    return app_record
-
-
-@app.patch("/api/applications/{job_id}/notes")
-def update_notes(job_id: str, notes: str, db: Session = Depends(get_db)):
-    app_record = db.query(Application).filter(Application.job_id == job_id).first()
-    if not app_record:
-        raise HTTPException(status_code=404, detail="Application not found")
-    app_record.notes = notes
-    db.commit()
-    return {"success": True}
-
-
-# ─── Resume Management ───────────────────────────────────────────────────────
-
-@app.post("/api/resume/upload")
-async def upload_resume(file: UploadFile = File(...), db: Session = Depends(get_db)):
-    """Upload a .tex resume file as the base resume."""
-    if not file.filename.endswith(".tex"):
-        raise HTTPException(status_code=400, detail="Only .tex files are supported")
-
-    save_dir = Path("resumes")
-    save_dir.mkdir(exist_ok=True)
-    save_path = save_dir / file.filename
-
-    content = await file.read()
-    save_path.write_bytes(content)
-
-    tex_text = tex_to_text(content.decode("utf-8", errors="ignore"))
-
-    # Deactivate old resumes
-    db.query(BaseResume).update({"is_active": False})
-
-    base = BaseResume(
-        filename=file.filename,
-        file_path=str(save_path),
-        content_text=tex_text,
-        is_active=True,
-    )
-    db.add(base)
-    db.commit()
-    db.refresh(base)
-
-    # Update settings path
-    settings.base_resume_path = str(save_path)
-
-    return {"resume_id": base.id, "filename": file.filename, "preview_chars": len(tex_text)}
-
-
-@app.get("/api/resume/active")
-def get_active_resume(db: Session = Depends(get_db)):
-    base = db.query(BaseResume).filter(BaseResume.is_active == True).first()
-    if not base:
-        return {"resume": None}
     return {
-        "resume_id": base.id,
-        "filename": base.filename,
-        "content_preview": base.content_text[:500],
-        "uploaded_at": base.uploaded_at,
+        **_scan_status,
+        "elapsed_seconds": int(_scan_runtime()),
+        "stalled": _scan_is_stalled(),
     }
 
 
-@app.get("/api/resume/download/{job_id}")
-def download_tailored_resume(job_id: str, db: Session = Depends(get_db)):
-    app_record = db.query(Application).filter(Application.job_id == job_id).first()
-    if not app_record or not app_record.tailored_resume_path:
-        raise HTTPException(status_code=404, detail="Tailored resume not found")
-    path = Path(app_record.tailored_resume_path)
-    if not path.exists():
-        raise HTTPException(status_code=404, detail="File not found on disk")
-    return FileResponse(str(path), filename=path.name, media_type="application/x-tex")
+@app.post("/api/scan/stop")
+def stop_scan(force: bool = Query(False)):
+    """
+    Ask the scan to stop.
+
+    The flag is cooperative — a scraper blocked on a request that never returns
+    will not see it. `force` is the way out of that: it releases the status so
+    a new scan can be started, which is the only thing the user actually needs
+    when the old one is wedged.
+    """
+    from backend.scan_control import request_stop
+
+    if not _scan_status["running"]:
+        return {"message": "Scan is not running", "running": False}
+
+    request_stop()
+    if force or _scan_is_stalled():
+        elapsed = int(_scan_runtime())
+        _scan_status["running"] = False
+        _scan_status["started_at"] = None
+        _scan_status["last_result"] = {
+            "error": f"Scan abandoned after {elapsed}s — it had stopped responding."
+        }
+        logger.warning(f"Scan force-released after {elapsed}s")
+        return {"message": "Scan abandoned", "running": False, "forced": True}
+
+    return {"message": "Stop requested", "running": True}
+
+
+# ─── Auto-apply ──────────────────────────────────────────────────────────────
+
+_apply_status = {"running": False, "last_result": None, "current_job": None}
+
+
+@app.get("/api/profile")
+def get_profile():
+    profile = load_profile()
+    data = profile.to_dict()
+    data["missing"] = profile.missing_required()
+    data["has_resume"] = profile.resume_file() is not None
+    data["ready_to_apply"] = not data["missing"]
+    return data
+
+
+@app.put("/api/profile")
+def update_profile(payload: dict):
+    profile = save_profile(payload)
+    data = profile.to_dict()
+    data["missing"] = profile.missing_required()
+    data["has_resume"] = profile.resume_file() is not None
+    data["ready_to_apply"] = not data["missing"]
+    return data
+
+
+@app.post("/api/profile/resume")
+async def upload_resume_file(file: UploadFile = File(...)):
+    suffix = Path(file.filename or "resume.pdf").suffix.lower()
+    if suffix not in {".pdf", ".doc", ".docx"}:
+        raise HTTPException(status_code=400, detail="Resume must be PDF, DOC, or DOCX")
+    RESUMES_DIR.mkdir(parents=True, exist_ok=True)
+    dest = RESUMES_DIR / f"resume{suffix}"
+    dest.write_bytes(await file.read())
+    rel = f"resumes/resume{suffix}"
+    save_profile({"resume_path": rel})
+    return {"success": True, "resume_path": rel}
+
+
+@app.get("/api/apply/status")
+def get_apply_status():
+    return _apply_status
+
+
+@app.post("/api/apply/stop")
+async def stop_apply():
+    from backend.applier.control import request_stop
+    from backend.applier.engine import close_apply_browser
+
+    if not _apply_status["running"]:
+        return {"message": "Apply is not running", "running": False}
+    request_stop()
+    await close_apply_browser()
+    return {"message": "Stop requested", "running": True}
+
+
+@app.post("/api/apply")
+async def start_apply(req: ApplyRequest, background_tasks: BackgroundTasks):
+    if _apply_status["running"]:
+        raise HTTPException(status_code=409, detail="Apply already running")
+    if _scan_status["running"]:
+        raise HTTPException(status_code=409, detail="Scan is running — wait until it finishes")
+
+    profile = load_profile()
+    missing = [m for m in profile.missing_required() if m != "resume"]
+    if missing:
+        raise HTTPException(status_code=400, detail="Profile incomplete: " + ", ".join(missing))
+
+    # Claimed before the task is queued, for the same reason as the scan: a
+    # background task starts after the response, so the dashboard's first poll
+    # would otherwise see running=False and give up on the run.
+    _apply_status["running"] = True
+    _apply_status["current_job"] = None
+
+    async def do_apply():
+        try:
+            from backend.applier.engine import run_apply_pipeline
+            result = await run_apply_pipeline(
+                job_ids=req.job_ids,
+                auto_submit=req.auto_submit,
+                headless=req.headless,
+            )
+            _apply_status["last_result"] = result
+        except Exception as e:
+            logger.error(f"Apply error: {e}")
+            _apply_status["last_result"] = {"error": str(e)}
+        finally:
+            _apply_status["running"] = False
+            _apply_status["current_job"] = None
+
+    background_tasks.add_task(do_apply)
+    return {"message": "Apply started", "running": True}
+
+
+@app.post("/api/jobs/{job_id}/apply")
+async def apply_single_job(job_id: str, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    job = db.query(Job).filter(Job.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    req = ApplyRequest(job_ids=[job_id], auto_submit=True, headless=False)
+    return await start_apply(req, background_tasks)
 
 
 # ─── Analytics ───────────────────────────────────────────────────────────────
@@ -325,7 +621,7 @@ def get_analytics(db: Session = Depends(get_db)):
         by_status[status] = db.query(Job).filter(Job.status == status).count()
 
     by_platform = {}
-    for platform in ["linkedin", "indeed", "naukri", "instahyre", "manual"]:
+    for platform in ALL_PLATFORMS:
         by_platform[platform] = db.query(Job).filter(Job.platform == platform).count()
 
     top_companies = (
@@ -353,19 +649,21 @@ def get_settings():
         "preferred_locations": settings.preferred_locations_list,
         "min_relevance_score": settings.min_relevance_score,
         "user_full_name": settings.user_full_name,
+        "excluded_companies": settings.excluded_companies_list,
         "has_gemini_key": bool(settings.gemini_api_key),
         "has_linkedin": bool(settings.linkedin_email),
         "has_naukri": bool(settings.naukri_email),
         "has_indeed": bool(settings.indeed_email),
         "has_instahyre": bool(settings.instahyre_email),
+        "supported_platforms": SCAN_PLATFORMS,
     }
 
 
 @app.post("/api/settings")
 def update_settings(new_settings: dict):
     """Update settings (writes to .env file)."""
-    env_path = Path("config/.env")
-    env_path.parent.mkdir(exist_ok=True)
+    env_path = _env_path()
+    env_path.parent.mkdir(parents=True, exist_ok=True)
 
     existing_lines = []
     if env_path.exists():
@@ -377,6 +675,9 @@ def update_settings(new_settings: dict):
         "PREFERRED_LOCATIONS": ",".join(new_settings.get("preferred_locations", settings.preferred_locations_list)),
         "MIN_RELEVANCE_SCORE": str(new_settings.get("min_relevance_score", settings.min_relevance_score)),
         "USER_FULL_NAME": new_settings.get("user_full_name", settings.user_full_name),
+        "EXCLUDED_COMPANIES": ",".join(
+            new_settings.get("excluded_companies", settings.excluded_companies_list)
+        ),
         "GEMINI_API_KEY": new_settings.get("gemini_api_key", settings.gemini_api_key),
         "LINKEDIN_EMAIL": new_settings.get("linkedin_email", settings.linkedin_email),
         "LINKEDIN_PASSWORD": new_settings.get("linkedin_password", settings.linkedin_password),

@@ -1,0 +1,107 @@
+% Fixture reproducing the structure of the widely used "Jake's Resume" template,
+% which is what the real master resume is built on. It exists to pin down four
+% bugs that only this shape of document exposes:
+%
+%   1. \newcommand definitions in the preamble contain a literal \item, which a
+%      naive scan offers up as a droppable bullet — trimming one would destroy
+%      the document.
+%   2. \resumeProjectHeading nests \textbf{\href{..}{\underline{Name}}}, so an
+%      entry-label regex without brace matching never finds the project name.
+%   3. A "% ---- Section ----" comment sits between the summary text and the next
+%      \section, so a span running to the next section swallows it and escaping
+%      turns the comment into printed text.
+%   4. \input{glyphtounicode} and \pdfgentounicode are pdfTeX-only and abort
+%      XeTeX, which is the engine Tectonic runs.
+\documentclass[letterpaper,10pt]{article}
+\usepackage[margin=0.4in]{geometry}
+\usepackage{titlesec}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\input{glyphtounicode}
+\pdfgentounicode=1
+
+\titleformat{\section}{\vspace{-2pt}\scshape\raggedright\large}{}{0em}{}[\titlerule \vspace{-6pt}]
+
+\newcommand{\resumeItem}[1]{
+    \item\small{#1 \vspace{-2pt}}
+}
+
+\newcommand{\resumeSubheading}[4]{
+    \vspace{-2pt}\item
+    \begin{tabular*}{0.97\textwidth}[t]{l@{\extracolsep{\fill}}r}
+        \textbf{#1} & #2 \\
+        \textit{\small #3} & \textit{\small #4} \\
+    \end{tabular*}\vspace{-7pt}
+}
+
+\newcommand{\resumeProjectHeading}[2]{
+    \item
+    \begin{tabular*}{0.97\textwidth}{l@{\extracolsep{\fill}}r}
+        \small #1 & #2 \\
+    \end{tabular*}\vspace{-7pt}
+}
+
+\newcommand{\resumeItemListStart}{\begin{itemize}[leftmargin=0.18in]}
+\newcommand{\resumeItemListEnd}{\end{itemize}\vspace{-6pt}}
+
+\begin{document}
+
+% ---------- Header ----------
+\begin{center}
+    {\fontsize{17}{19}\selectfont\textbf{Test Candidate}}\\[-1pt]
+    \small Bengaluru, India \,|\, test@example.com
+\end{center}
+
+% ---------- Summary ----------
+\section{Summary}
+\small
+Backend engineer with production ownership of device fleet infrastructure, traffic migration and efficient release workflows.
+
+% ---------- Experience ----------
+\section{Experience}
+\begin{itemize}[label={},leftmargin=0pt]
+  \resumeSubheading
+    {Acme Payments}{Jan 2025 -- Present}
+    {Software Engineer}{Bengaluru, India}
+  \begin{itemize}
+    \resumeItem{Owned the regional launch end-to-end, moving device connectivity to TLS over HTTPS/MQTTS and validating certificate compatibility.}
+    \resumeItem{Led migration of the deployed fleet to new backend hosts with zero downtime for live transaction traffic.}
+    \resumeItem{Improved API response times by 40\% through asynchronous processing and caching.}
+  \end{itemize}
+\end{itemize}
+
+% ---------- Projects ----------
+\section{Projects}
+\begin{itemize}[leftmargin=0.15in, label={}]
+  \resumeProjectHeading
+    {\textbf{\href{https://example.com/ThrottleX}{\underline{ThrottleX}}} $-$ API Rate Limiting Service}
+    {\textit{Java 17, Spring Boot, MySQL}}
+  \resumeItemListStart
+    \resumeItem{Built a rate-limiting service supporting Token Bucket and Sliding Window algorithms behind a common \texttt{Limiter} interface.}
+    \resumeItem{Implemented transactional MySQL persistence with pessimistic locking and indexed request logs.}
+  \resumeItemListEnd
+
+  \resumeProjectHeading
+    {\textbf{\href{https://example.com/OktaDB}{\underline{OktaDB}}} $-$ Embedded Storage Engine}
+    {\textit{C, B+Tree, WAL}}
+  \resumeItemListStart
+    \resumeItem{Built a persistent key-value storage engine with a custom 4KB paged binary format.}
+    \resumeItem{Implemented a B+Tree with node splitting and $O(\log n)$ lookups for indexed access.}
+  \resumeItemListEnd
+\end{itemize}
+
+% ---------- Education ----------
+\section{Education}
+\begin{itemize}[label={},leftmargin=0pt]
+  \resumeSubheading
+    {Test Institute of Technology}{Nov 2021 -- Jul 2025}
+    {B.Tech in Computer Science, CGPA: 7.79/10}{Bengaluru, India}
+\end{itemize}
+
+% ---------- Achievements ----------
+\section{Achievements}
+\begin{itemize}[leftmargin=14pt]
+    \resumeItem{Solved 1200+ algorithmic problems across competitive programming sites.}
+\end{itemize}
+
+\end{document}

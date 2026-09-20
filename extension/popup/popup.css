@@ -1,0 +1,157 @@
+/*
+ * Toolbar popup.
+ *
+ * Tokens mirror dashboard/app/globals.css so the extension and the dashboard
+ * read as one product. Dark mode follows the OS here rather than the
+ * dashboard's theme toggle, since a popup has no access to that setting.
+ */
+:root {
+  --surface: #ffffff;
+  --surface-2: #f5f5f7;
+  --surface-3: #ebebed;
+  --border: rgba(0, 0, 0, 0.08);
+  --text-primary: #1d1d1f;
+  --text-secondary: #6e6e73;
+  --text-muted: #86868b;
+  --accent: #0071e3;
+  --accent-ring: rgba(0, 113, 227, 0.2);
+  --success: #34c759;
+  --danger: #ff3b30;
+  --danger-bg: rgba(255, 59, 48, 0.08);
+  --danger-border: rgba(255, 59, 48, 0.2);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --surface: #1c1c1e;
+    --surface-2: #2c2c2e;
+    --surface-3: #3a3a3c;
+    --border: rgba(255, 255, 255, 0.1);
+    --text-primary: #f5f5f7;
+    --text-secondary: #a1a1a6;
+    --text-muted: #6e6e73;
+    --accent: #0a84ff;
+    --accent-ring: rgba(10, 132, 255, 0.25);
+    --danger-bg: rgba(255, 59, 48, 0.12);
+    --danger-border: rgba(255, 59, 48, 0.25);
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  width: 286px;
+  margin: 0;
+  padding: 14px;
+  background: var(--surface);
+  color: var(--text-primary);
+  font: 13px/1.45 -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  display: grid;
+  gap: 10px;
+}
+
+header { display: flex; align-items: center; gap: 9px; }
+
+.bolt {
+  width: 30px; height: 30px; flex: none;
+  border-radius: 9px;
+  background: var(--accent);
+  display: grid; place-items: center;
+  color: #fff; font-size: 15px;
+}
+
+.titles { flex: 1; min-width: 0; }
+h1 { margin: 0; font-size: 14px; font-weight: 600; letter-spacing: -0.01em; }
+#subtitle { margin: 1px 0 0; font-size: 11px; color: var(--text-muted); }
+
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--surface-3); flex: none; }
+.dot.up { background: var(--success); }
+.dot.down { background: var(--danger); }
+
+.profile {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 9px 11px;
+  display: grid;
+  gap: 5px;
+  background: var(--surface-2);
+}
+
+.row { display: flex; justify-content: space-between; gap: 10px; font-size: 11.5px; }
+.row span { color: var(--text-muted); }
+.row b {
+  font-weight: 600; max-width: 165px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.alert {
+  font-size: 11.5px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--danger-bg);
+  color: var(--danger);
+  border: 1px solid var(--danger-border);
+}
+
+button {
+  width: 100%;
+  border: none;
+  border-radius: 12px;
+  padding: 9px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  font-family: inherit;
+  transition: filter .15s ease, background .15s ease;
+}
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.primary { background: var(--accent); color: #fff; }
+.primary:hover:not(:disabled) { filter: brightness(1.08); }
+.ghost {
+  background: var(--surface-2);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+}
+.ghost:hover:not(:disabled) { background: var(--surface-3); }
+.small { width: auto; padding: 6px 11px; font-size: 11.5px; }
+
+details { font-size: 11.5px; color: var(--text-muted); }
+summary { cursor: pointer; padding: 2px 0; }
+summary:focus-visible { outline: 2px solid var(--accent-ring); border-radius: 4px; }
+.api { display: flex; gap: 6px; margin-top: 6px; }
+.api input {
+  flex: 1; min-width: 0;
+  padding: 6px 9px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 11.5px;
+}
+.api input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
+footer {
+  display: flex; justify-content: space-between; align-items: center;
+  font-size: 10.5px; color: var(--text-muted);
+  border-top: 1px solid var(--border);
+  padding-top: 9px;
+}
+footer a { color: var(--accent); text-decoration: none; }
+footer a:hover { text-decoration: underline; }
+
+kbd {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  padding: 0 4px;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 9.5px;
+}

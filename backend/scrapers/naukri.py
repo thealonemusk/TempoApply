@@ -1,131 +1,203 @@
 """
-Naukri.com Job Scraper — searches jobs on Naukri.com.
-Handles login and job card parsing with recruiter info extraction.
+Naukri.com Job Scraper — searches entry-level (0-2 yr) jobs on Naukri.com.
+Uses public search URLs; no login required.
 """
-import asyncio
-from typing import List
+from typing import List, Set
+
 from loguru import logger
 from playwright.async_api import async_playwright
 
-from backend.scrapers.base import create_browser_context, normalize_job
+from backend.scrapers.filter_utils import passes_hard_filters
+from backend.scrapers.base import normalize_job
+from backend.scrapers.registry import resolve_discovery_roles
+from backend.scan_control import should_stop
 from backend.config import settings
+from backend.job_freshness import NAUKRI_JOB_AGE_DAYS
+
+NAUKRI_LOCATIONS = [
+    "Bengaluru", "Hyderabad", "Pune", "Mumbai", "Gurugram", "Gurgaon",
+    "Noida", "Delhi", "Chennai", "Kolkata",
+]
+NAUKRI_PAGES = 2
+SKIP_SEARCH_LOCATIONS = {"remote", "work from home", "wfh", "anywhere"}
+LOC_SLUG_ALIASES = {
+    "bengaluru": "bangalore",
+    "gurugram": "gurgaon",
+}
+CARD_SELECTOR = (
+    ".srp-jobtuple-wrapper, .cust-job-tuple, article.jobTuple, "
+    "div[class*='jobTuple']"
+)
+STEALTH_JS = "Object.defineProperty(navigator, 'webdriver', { get: () => undefined });"
 
 
-async def _login_naukri(page) -> bool:
-    try:
-        await page.goto("https://www.naukri.com/", timeout=30000)
-        await page.wait_for_timeout(2000)
+def _merge_locations(locations: List[str]) -> List[str]:
+    merged: List[str] = []
+    seen: Set[str] = set()
+    for loc in list(locations) + NAUKRI_LOCATIONS:
+        key = loc.lower().strip()
+        if not key or key in seen or key in SKIP_SEARCH_LOCATIONS:
+            continue
+        seen.add(key)
+        merged.append(loc.strip())
+    return merged
 
-        # Click login button
-        try:
-            login_btn = await page.query_selector('[title="Jobseeker Login"]')
-            if login_btn:
-                await login_btn.click()
-                await page.wait_for_timeout(1500)
-        except Exception:
-            await page.goto("https://www.naukri.com/nlogin/login", timeout=30000)
 
-        await page.fill('input[placeholder="Enter your active Email ID / Username"]', settings.naukri_email)
-        await page.fill('input[placeholder="Enter your password"]', settings.naukri_password)
-        await page.click('button[type="submit"]')
-        await page.wait_for_timeout(4000)
-        logger.info("✅ Naukri login successful")
-        return True
-    except Exception as e:
-        logger.error(f"Naukri login failed: {e}")
-        return False
+def _role_slug(role: str) -> str:
+    return role.lower().replace(" ", "-").replace(".", "")
+
+
+def _loc_slug(location: str) -> str:
+    slug = _role_slug(location)
+    return LOC_SLUG_ALIASES.get(slug, slug)
 
 
 async def scrape_naukri_jobs(
     roles: List[str] = None,
     locations: List[str] = None,
-    max_jobs: int = 25,
+    max_jobs: int = 300,
     headless: bool = True,
 ) -> List[dict]:
-    """Scrape jobs from Naukri.com."""
-    roles = roles or settings.target_roles_list
-    locations = locations or settings.preferred_locations_list
-    all_jobs = []
+    """Scrape 0-2 year jobs from Naukri.com."""
+    roles = resolve_discovery_roles(roles or settings.target_roles_list)
+    locations = _merge_locations(locations or settings.preferred_locations_list)
+    all_jobs: List[dict] = []
+    seen_urls: Set[str] = set()
+    empty_streak = 0
+
+    logger.info(f"Naukri: searching {len(roles)} roles across {len(locations)} locations")
 
     async with async_playwright() as pw:
-        browser, ctx = await create_browser_context(pw, headless=headless)
-        page = await ctx.new_page()
-
-        if not await _login_naukri(page):
-            await browser.close()
+        launch_kwargs = {
+            "headless": headless,
+            "args": ["--disable-blink-features=AutomationControlled", "--no-sandbox"],
+        }
+        browser = None
+        for channel in ("chrome", None):
+            kwargs = dict(launch_kwargs)
+            if channel:
+                kwargs["channel"] = channel
+            try:
+                browser = await pw.chromium.launch(**kwargs)
+                break
+            except Exception as exc:
+                logger.debug(f"Naukri Chromium launch channel={channel}: {exc}")
+        if browser is None:
+            logger.error("Naukri: could not launch Chrome")
             return []
 
-        for role in roles[:2]:
-            for location in locations[:2]:
-                try:
-                    search_url = (
-                        f"https://www.naukri.com/{role.lower().replace(' ', '-')}"
-                        f"-jobs-in-{location.lower().replace(' ', '-')}"
-                        f"?jobAge=1&sort=1"  # Last 1 day, newest first
-                    )
-                    await page.goto(search_url, timeout=30000)
-                    await page.wait_for_timeout(3000)
+        ctx = await browser.new_context(
+            locale="en-IN",
+            timezone_id="Asia/Kolkata",
+            viewport={"width": 1400, "height": 900},
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            ),
+        )
+        await ctx.add_init_script(STEALTH_JS)
+        page = await ctx.new_page()
 
-                    job_cards = await page.query_selector_all(".srp-jobtuple-wrapper, article.jobTuple")
-                    logger.info(f"Found {len(job_cards)} Naukri jobs for '{role}' in '{location}'")
+        stop_all = False
+        for role in roles:
+            if should_stop() or stop_all:
+                break
+            for location in locations:
+                if should_stop() or stop_all:
+                    break
+                for page_no in range(1, NAUKRI_PAGES + 1):
+                    if should_stop() or len(all_jobs) >= max_jobs:
+                        break
+                    try:
+                        job_slug = _role_slug(role)
+                        loc_slug = _loc_slug(location)
+                        search_url = (
+                            f"https://www.naukri.com/{job_slug}-jobs-in-{loc_slug}-0-to-2-years"
+                            f"?jobAge={NAUKRI_JOB_AGE_DAYS}&sort=1&pageNo={page_no}"
+                        )
 
-                    for card in job_cards[:max_jobs]:
+                        await page.goto(search_url, timeout=30000, wait_until="domcontentloaded")
                         try:
-                            title_el = await card.query_selector("a.title, .jobTupleHeader a")
-                            company_el = await card.query_selector("a.comp-name, .company-name")
-                            location_el = await card.query_selector(".loc, .location")
-                            exp_el = await card.query_selector(".exp, .experience")
+                            await page.wait_for_selector(CARD_SELECTOR, timeout=15000)
+                        except Exception:
+                            pass
 
-                            title = (await title_el.inner_text()).strip() if title_el else ""
-                            company = (await company_el.inner_text()).strip() if company_el else ""
-                            location_text = (await location_el.inner_text()).strip() if location_el else ""
-                            exp = (await exp_el.inner_text()).strip() if exp_el else ""
-                            url = await title_el.get_attribute("href") if title_el else ""
+                        job_cards = await page.query_selector_all(CARD_SELECTOR)
+                        if not job_cards:
+                            title = await page.title()
+                            empty_streak += 1
+                            logger.warning(
+                                f"Naukri no cards for '{role}' in '{location}' "
+                                f"p{page_no} title={title!r}"
+                            )
+                            if empty_streak >= 4:
+                                logger.error(
+                                    "Naukri: 4 empty pages in a row — blocked or layout changed"
+                                )
+                                stop_all = True
+                            break
 
-                            if not title or not url:
+                        empty_streak = 0
+                        logger.info(
+                            f"Naukri p{page_no}: {len(job_cards)} cards for '{role}' in '{location}'"
+                        )
+
+                        for card in job_cards:
+                            if len(all_jobs) >= max_jobs:
+                                break
+                            try:
+                                title_el = await card.query_selector(
+                                    "a.title, .jobTupleHeader a, h2 a"
+                                )
+                                company_el = await card.query_selector(
+                                    "a.comp-name, .company-name, a[class*='comp']"
+                                )
+                                location_el = await card.query_selector(
+                                    ".loc-wrap, .loc, .location"
+                                )
+                                exp_el = await card.query_selector(
+                                    ".exp-wrap, .exp, .experience"
+                                )
+
+                                title = (await title_el.inner_text()).strip() if title_el else ""
+                                company = (await company_el.inner_text()).strip() if company_el else ""
+                                location_text = (await location_el.inner_text()).strip() if location_el else ""
+                                exp = (await exp_el.inner_text()).strip() if exp_el else ""
+                                url = await title_el.get_attribute("href") if title_el else ""
+
+                                if not title or not url or url in seen_urls:
+                                    continue
+
+                                preview = {
+                                    "title": title,
+                                    "company": company,
+                                    "location": location_text or location,
+                                    "url": url,
+                                    "experience_required": exp,
+                                    "jd_text": "",
+                                    "platform": "naukri",
+                                }
+                                ok, _ = passes_hard_filters(preview)
+                                if not ok:
+                                    continue
+
+                                seen_urls.add(url)
+                                all_jobs.append(normalize_job(preview, "naukri"))
+                            except Exception as e:
+                                logger.debug(f"Error parsing Naukri card: {e}")
                                 continue
 
-                            # Get JD from detail page
-                            jd_text = ""
-                            recruiter_name = ""
-                            try:
-                                detail_page = await ctx.new_page()
-                                await detail_page.goto(url, timeout=25000)
-                                await detail_page.wait_for_timeout(2000)
+                    except Exception as e:
+                        logger.error(f"Naukri search failed for {role}/{location} p{page_no}: {e}")
+                        break
 
-                                job_desc_el = await detail_page.query_selector(
-                                    ".job-desc, #job-description, .jd-desc"
-                                )
-                                if job_desc_el:
-                                    jd_text = await job_desc_el.inner_text()
+                if len(all_jobs) >= max_jobs:
+                    break
+            if len(all_jobs) >= max_jobs:
+                break
 
-                                recruiter_el = await detail_page.query_selector(".recruiter-name, .contact-name")
-                                if recruiter_el:
-                                    recruiter_name = await recruiter_el.inner_text()
-
-                                await detail_page.close()
-                            except Exception:
-                                pass
-
-                            raw = {
-                                "title": title,
-                                "company": company,
-                                "location": location_text,
-                                "url": url,
-                                "experience_required": exp,
-                                "jd_text": jd_text.strip(),
-                                "recruiter_name": recruiter_name.strip(),
-                            }
-                            all_jobs.append(normalize_job(raw, "naukri"))
-                            await page.wait_for_timeout(600)
-                        except Exception as e:
-                            logger.warning(f"Error parsing Naukri card: {e}")
-                            continue
-
-                except Exception as e:
-                    logger.error(f"Naukri search failed for {role}/{location}: {e}")
-                    continue
-
+        await ctx.close()
         await browser.close()
 
+    logger.info(f"Naukri: {len(all_jobs)} jobs after validation")
     return all_jobs

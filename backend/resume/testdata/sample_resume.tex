@@ -1,0 +1,69 @@
+% Fixture resume: mirrors the structure of a standard LaTeX CV (right-aligned
+% dates, itemised bullets, a skills block) so the slot parser, the guard and the
+% one-page fitter can be tested without the user's real file.
+\documentclass[a4paper,9pt]{article}
+\usepackage[margin=0.5in]{geometry}
+\usepackage{enumitem}
+\usepackage{titlesec}
+\usepackage{hyperref}
+\usepackage[T1]{fontenc}
+
+\titleformat{\section}{\scshape\large}{}{0em}{}[\titlerule]
+\titlespacing{\section}{0pt}{8pt}{4pt}
+\setlist[itemize]{leftmargin=*,noitemsep,topsep=2pt}
+\pagestyle{empty}
+
+\newcommand{\role}[4]{%
+  \textbf{#1} \hfill #2 \\
+  \textit{#3} \hfill \textit{#4}\par\vspace{2pt}}
+
+\begin{document}
+
+\begin{center}
+  {\LARGE \textbf{Ashutosh Jha}} \\
+  Noida, India --- +91 9939964663 --- ashutosh.jha.cs@gmail.com \\
+  \href{https://linkedin.com/in/thealonemusk}{LinkedIn} ---
+  \href{https://github.com/thealonemusk}{GitHub}
+\end{center}
+
+\section{Summary}
+Backend and distributed-systems engineer with production ownership of device-to-cloud payment infrastructure.
+
+\section{Experience}
+\role{Paytm}{Jan 2025 -- Present}{Software Engineer}{Noida, India}
+\begin{itemize}
+  \item Owned the Indonesia IoT launch end-to-end, moving device connectivity to TLS over HTTPS/MQTTS.
+  \item Led migration of the deployed device fleet to new backend hosts with zero downtime for live transaction traffic.
+  \item Owned CI/CD and OTA release path for 18 device types including Jenkins builds and canary rollouts.
+  \item Designed fleet telemetry and fixed a messaging-client memory leak and use-after-free.
+  \item Built a Python and Slack LLM-agent orchestration system enabling 45 production changes.
+\end{itemize}
+
+\role{Denr Financial Services}{Mar 2024 -- Jun 2024}{Software Developer Intern}{Remote}
+\begin{itemize}
+  \item Built backend services using AWS Lambda, Cognito and S3 for authentication and cloud storage.
+  \item Improved API response times by 40\% through asynchronous processing and caching.
+\end{itemize}
+
+\section{Projects}
+\textbf{ThrottleX} --- API Rate Limiting Service \hfill \textit{Java 17, Spring Boot, MySQL}
+\begin{itemize}
+  \item Built a Spring Boot rate-limiting service supporting Token Bucket and Sliding Window algorithms.
+  \item Implemented transactional MySQL persistence with JPA/Hibernate and pessimistic locking.
+\end{itemize}
+
+\textbf{OktaDB} --- Embedded Storage Engine \hfill \textit{C, B+Tree, WAL}
+\begin{itemize}
+  \item Built a persistent C key-value storage engine with a custom 4KB paged binary format.
+  \item Implemented a B+Tree with node splitting and $O(\log n)$ lookups, plus write-ahead logging for crash recovery.
+\end{itemize}
+
+\section{Technical Skills}
+\textbf{Languages}: C, C++, Java, Python, SQL, JavaScript/TypeScript \\
+\textbf{Backend}: REST APIs, Microservices, Spring Boot, Node.js, JPA/Hibernate \\
+\textbf{Infrastructure}: AWS (EC2, S3, EKS, Lambda, IoT Core), Docker, Kubernetes, Jenkins CI/CD
+
+\section{Education}
+\role{National Institute of Technology, Jalandhar}{Nov 2021 -- Jul 2025}{B.Tech in Computer Science and Engineering}{CGPA: 7.79/10}
+
+\end{document}

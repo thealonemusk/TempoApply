@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Apply — AcmeCorp</title>
+    <style>
+      body { font: 14px/1.5 system-ui, sans-serif; margin: 0; padding: 18px; }
+      label { display: block; font-weight: 600; font-size: 12.5px; margin-bottom: 4px; }
+      input, select { width: 100%; padding: 7px 9px; border: 1px solid #cbd5e1; border-radius: 6px; font: inherit; }
+      .field { margin-bottom: 13px; }
+      fieldset { border: 1px solid #e2e8f0; border-radius: 8px; margin-bottom: 13px; }
+      legend { font-weight: 600; font-size: 12.5px; }
+      fieldset label { display: inline-flex; gap: 6px; align-items: center; font-weight: 400; margin-right: 14px; }
+    </style>
+  </head>
+  <body>
+    <h3>Application</h3>
+    <div class="field"><label for="f">First name</label><input id="f" name="first_name" type="text" required /></div>
+    <div class="field"><label for="l">Last name</label><input id="l" name="last_name" type="text" required /></div>
+    <div class="field"><label for="e">Email address</label><input id="e" name="email" type="email" required /></div>
+    <div class="field"><label for="p">Mobile number</label><input id="p" name="phone" type="tel" required /></div>
+    <div class="field"><label for="li">LinkedIn profile</label><input id="li" name="linkedin" type="text" /></div>
+    <fieldset>
+      <legend>Are you legally authorized to work in India?</legend>
+      <label><input type="radio" name="auth" value="yes" required /> Yes</label>
+      <label><input type="radio" name="auth" value="no" required /> No</label>
+    </fieldset>
+    <div class="field"><label for="r">Resume/CV</label><input id="r" name="resume" type="file" required /></div>
+  </body>
+</html>

@@ -1,7 +1,6 @@
 from pydantic_settings import BaseSettings
 from pydantic import Field
 from typing import List
-import os
 from pathlib import Path
 
 # Load .env from config directory or root
@@ -24,8 +23,12 @@ class Settings(BaseSettings):
     instahyre_email: str = ""
     instahyre_password: str = ""
 
+    workday_email: str = ""
+    workday_password: str = ""
+
     # User profile
     user_full_name: str = "Ashutosh Jha"
+    user_email: str = ""
     user_phone: str = ""
     user_location: str = "Bengaluru, India"
     user_github: str = ""
@@ -38,6 +41,15 @@ class Settings(BaseSettings):
     preferred_locations: str = "Bengaluru,Remote"
     min_relevance_score: int = 60
     excluded_companies: str = ""
+
+    # Resume tailoring
+    openai_model: str = "gpt-5.4"
+    # Any OpenAI-compatible endpoint: a proxy, a gateway, or a local runtime
+    # such as Ollama (http://localhost:11434/v1). Blank means api.openai.com.
+    openai_base_url: str = ""
+    gemini_model: str = "gemini-2.0-flash"
+    tectonic_path: str = ""                  # blank -> tools/tectonic.exe, then PATH
+    master_resume_path: str = "resumes/master_resume.tex"
 
     # App
     base_resume_path: str = "resumes/base_resume.tex"

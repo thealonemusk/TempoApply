@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, Column, String, Integer, Float, Text, DateTime, ForeignKey, Boolean
+from sqlalchemy import create_engine, Column, String, Integer, Float, Text, DateTime, ForeignKey, Boolean, text
 from sqlalchemy.orm import DeclarativeBase, relationship, sessionmaker
 from sqlalchemy.sql import func
 from datetime import datetime
@@ -40,8 +40,12 @@ class Job(Base):
     easy_apply = Column(Boolean, default=False)
     recruiter_name = Column(String, default="")
     recruiter_profile = Column(String, default="")
+    ats_type = Column(String, default="")  # greenhouse, lever, workday, custom, unknown
+    apply_status = Column(String, default="")  # queued, applying, applied, failed, needs_review, skipped
+    apply_error = Column(Text, default="")
     # Timestamps
     discovered_at = Column(DateTime, default=func.now())
+    visited_at = Column(DateTime, nullable=True)
     applied_at = Column(DateTime, nullable=True)
     last_updated = Column(DateTime, default=func.now(), onupdate=func.now())
 
@@ -75,6 +79,29 @@ class BaseResume(Base):
     uploaded_at = Column(DateTime, default=func.now())
 
 
+class SeenJob(Base):
+    """Permanent record of every job URL the scanner has ever surfaced.
+
+    Separate from `jobs` on purpose: `jobs` is a working queue that the scan
+    purges, this is the memory that survives the purge. See
+    backend/seen_ledger.py for the status semantics.
+    """
+
+    __tablename__ = "seen_jobs"
+
+    url_key = Column(String, primary_key=True)  # md5 of the normalized URL
+    url = Column(String, nullable=False)
+    tc_key = Column(String, default="", index=True)  # md5 of title|company
+    title = Column(String, default="")
+    company = Column(String, default="")
+    platform = Column(String, default="")
+    status = Column(String, default="seen", index=True)
+    reason = Column(Text, default="")
+    first_seen = Column(DateTime, default=func.now())
+    last_seen = Column(DateTime, default=func.now(), onupdate=func.now())
+    times_seen = Column(Integer, default=1)
+
+
 def get_db():
     db = SessionLocal()
     try:
@@ -85,4 +112,73 @@ def get_db():
 
 def init_db():
     Base.metadata.create_all(bind=engine)
+    _migrate_db()
+    _seed_seen_ledger()
     print("Database initialized (SQLite)")
+
+
+def _seed_seen_ledger():
+    """Backfill the ledger once, so jobs handled before it existed stay handled."""
+    from backend.seen_ledger import backfill_from_jobs
+
+    db = SessionLocal()
+    try:
+        backfill_from_jobs(db)
+    except Exception as exc:  # a failed backfill must not block startup
+        print(f"Seen ledger backfill skipped: {exc}")
+    finally:
+        db.close()
+
+
+def _migrate_db():
+    """Add columns to existing SQLite DBs without Alembic."""
+    with engine.connect() as conn:
+        cols = conn.execute(text("PRAGMA table_info(jobs)")).fetchall()
+        col_names = {row[1] for row in cols}
+        if "visited_at" not in col_names:
+            conn.execute(text("ALTER TABLE jobs ADD COLUMN visited_at DATETIME"))
+            conn.commit()
+        extras = {
+            "ats_type": "VARCHAR DEFAULT ''",
+            "apply_status": "VARCHAR DEFAULT ''",
+            "apply_error": "TEXT DEFAULT ''",
+        }
+        for name, ddl in extras.items():
+            if name not in col_names:
+                conn.execute(text(f"ALTER TABLE jobs ADD COLUMN {name} {ddl}"))
+                conn.commit()
+    _release_cleared_jobs()
+
+
+def _release_cleared_jobs() -> None:
+    """
+    Undo the blocklist entries that tidying the dashboard used to create.
+
+    Clear recorded everything it removed as "dismissed", a blocking status, so
+    each tidy-up permanently hid that whole page of jobs from every future
+    scan. On this database that was 235 rows — which is why a scan that found
+    hundreds of postings was inserting about twenty.
+
+    Only rows written by Clear are touched, matched on their exact reason
+    string; a job genuinely dismissed by hand stays dismissed. Idempotent.
+    """
+    from sqlalchemy import text as _text
+
+    with engine.connect() as conn:
+        try:
+            result = conn.execute(
+                _text(
+                    "UPDATE seen_jobs SET status = 'cleared' "
+                    "WHERE status = 'dismissed' AND reason = :reason"
+                ),
+                {"reason": "cleared from the dashboard"},
+            )
+            conn.commit()
+        except Exception as exc:  # a failed repair must not block startup
+            print(f"Seen ledger repair skipped: {exc}")
+            return
+    if result.rowcount:
+        print(
+            f"Seen ledger: released {result.rowcount} job(s) blocked by an old "
+            f"Clear; they can be rediscovered by the next scan."
+        )

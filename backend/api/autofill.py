@@ -1,0 +1,493 @@
+"""
+Autofill API — the brain behind the browser extension.
+
+The extension scrapes the form it is sitting on and POSTs the raw fields here;
+this module answers with a value per field. All matching goes through
+`backend.applier.fields`, the same resolver the Playwright auto-apply uses, so
+tuning an alias or a custom answer improves both paths at once. Nothing here
+touches a browser — it is pure label -> value.
+"""
+from __future__ import annotations
+
+import base64
+import mimetypes
+import re
+import uuid
+from datetime import datetime
+from typing import Dict, List, Optional
+from urllib.parse import urlparse
+
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session
+
+from backend import seen_ledger
+from backend.applier.ats import detect_ats
+from backend.applier.fields import (
+    OPTION_FALLBACKS,
+    is_consent_label,
+    is_skip_field,
+    match_field_key,
+    pick_option,
+    pick_option_for_key,
+    resolve_value,
+)
+from backend.applier.profile import ApplicantProfile, load_profile
+from backend.applier.sections import KINDS, needed_counts, section_value, skill_list
+from backend.db.models import Job, get_db
+
+router = APIRouter(prefix="/api/autofill", tags=["autofill"])
+
+# Field types the extension can type into. Anything else is reported as `skip`.
+TEXTUAL_TYPES = {
+    "text", "email", "tel", "phone", "url", "number", "search", "date",
+    "textarea", "month",
+}
+
+# Page-title noise: "Job Application for Backend Engineer at Acme | Greenhouse"
+TITLE_NOISE = re.compile(
+    r"(job application for|apply for|application for|careers?|jobs?"
+    r"|\|.*$|-\s*(greenhouse|lever|workday|ashby).*$)",
+    re.I,
+)
+
+# File inputs that are not the resume.
+NON_RESUME_UPLOAD = ("cover", "photo", "transcript", "certificate", "id proof", "payslip")
+
+
+# ─── Schemas ─────────────────────────────────────────────────────────────────
+
+class ScrapedField(BaseModel):
+    idx: str
+    selector: str = ""
+    tag: str = ""
+    type: str = ""
+    name: str = ""
+    id: str = ""
+    automation: str = ""
+    autocomplete: str = ""
+    placeholder: str = ""
+    label: str = ""
+    group_label: str = ""          # fieldset/legend text for radio groups
+    option_label: str = ""         # this radio's own label
+    value: str = ""
+    checked: bool = False
+    required: bool = False
+    options: List[str] = Field(default_factory=list)
+    role: str = ""
+    section_kind: str = ""         # experience | education | website
+    section_index: int = 0         # 1-based entry number within that section
+
+
+class ResolveRequest(BaseModel):
+    url: str = ""
+    page_title: str = ""
+    job_title: str = ""
+    company: str = ""
+    overwrite: bool = False        # refill fields that already hold a value
+    fields: List[ScrapedField] = Field(default_factory=list)
+
+
+class Fill(BaseModel):
+    idx: str
+    selector: str = ""
+    action: str                    # text | select | combobox | checkbox | radio | file | skip
+    value: str = ""
+    options: List[str] = Field(default_factory=list)
+    label: str = ""
+    key: str = ""                  # which profile key answered it, for debugging
+    confidence: str = "high"       # high | low
+    reason: str = ""
+    values: List[str] = Field(default_factory=list)   # multiselect: pick each
+
+
+class ResolveResponse(BaseModel):
+    ats: str
+    job_title: str
+    company: str
+    job_id: Optional[str] = None
+    known_job: bool = False
+    has_resume: bool = False
+    sections_needed: Dict[str, int] = Field(default_factory=dict)
+    fills: List[Fill]
+    unresolved: List[str]
+    stats: Dict[str, int]
+
+
+class TrackRequest(BaseModel):
+    url: str
+    title: str = ""
+    company: str = ""
+    status: str = "applied"        # applied | visited
+    notes: str = ""
+
+
+# ─── Helpers ─────────────────────────────────────────────────────────────────
+
+def _clean_title(page_title: str) -> str:
+    text = TITLE_NOISE.sub(" ", page_title or "")
+    return re.sub(r"\s+", " ", text).strip(" -|·").strip()
+
+
+def _company_from_url(url: str) -> str:
+    parsed = urlparse(url or "")
+    host = parsed.netloc.lower()
+    path = parsed.path.strip("/")
+    # Greenhouse/Lever/Ashby put the company in the first path segment,
+    # Workday puts it in the host.
+    if any(m in host for m in ("greenhouse.io", "lever.co", "ashbyhq.com")):
+        first = path.split("/")[0] if path else ""
+        if first and first not in {"embed", "jobs"}:
+            return first.replace("-", " ").title()
+    if "myworkdayjobs.com" in host or "myworkday.com" in host:
+        return host.split(".")[0].replace("-", " ").title()
+    if not host or "localhost" in host or re.fullmatch(r"[\d.:]+", host):
+        return ""
+    ignore = {"www", "jobs", "careers", "boards", "apply", "com", "co", "io", "in", "net", "org"}
+    parts = [p for p in host.split(".") if p not in ignore and not p.isdigit()]
+    return parts[0].replace("-", " ").title() if parts else ""
+
+
+def _lookup_job(db: Session, url: str) -> Optional[Job]:
+    """Find the job row this page belongs to, so the extension can close the loop."""
+    if not url:
+        return None
+    job = db.query(Job).filter(Job.url == url).first()
+    if job:
+        return job
+    normalized = seen_ledger.normalize_url(url)
+    bare = url.split("?")[0].rstrip("/")
+    for candidate in db.query(Job).filter(Job.url.like(f"{bare}%")).limit(10).all():
+        if seen_ledger.normalize_url(candidate.url) == normalized:
+            return candidate
+    return None
+
+
+def _phone_value(profile: ApplicantProfile, field: ScrapedField, desired: str) -> str:
+    blob = f"{field.label} {field.name} {field.autocomplete} {field.placeholder}".lower()
+    # "Phone Device Type" is a dropdown wanting "Mobile", not a number — the
+    # resolver already answered it, so leave its answer alone.
+    if "device" in blob or "phone type" in blob:
+        return desired or "Mobile"
+    if "country" in blob or "dialing" in blob or "isd" in blob:
+        return profile.phone_country_code or profile.phone_country
+    if "extension" in blob or blob.strip().endswith(" ext"):
+        return ""
+    if desired and desired not in {profile.phone, profile.phone_e164()}:
+        return desired
+    # The national number is the safe default. Every portal that wants a phone
+    # number also asks for the country separately — Workday has a whole
+    # "Country Phone Code" field — and a "+91" typed into the number box on top
+    # of that is either rejected by validation or submitted as +91+91.
+    # A widget that genuinely wants E.164 says so in its placeholder.
+    placeholder = (field.placeholder or "").strip()
+    if placeholder.startswith("+") and "+91" not in placeholder:
+        return profile.phone_e164() or profile.phone_national()
+    return profile.phone_national() or profile.phone_e164()
+
+
+def _is_resume_input(field: ScrapedField) -> bool:
+    blob = f"{field.label} {field.name} {field.id} {field.automation}".lower()
+    return not any(x in blob for x in NON_RESUME_UPLOAD)
+
+
+SKILL_LABELS = ("skill", "skills", "key skills", "technical skills", "competenc")
+
+
+def _is_skill_multiselect(field: ScrapedField, label: str) -> bool:
+    """A skills picker takes many taxonomy entries, not one comma-joined string."""
+    blob = f"{label} {field.automation}".lower()
+    if not any(x in blob for x in SKILL_LABELS):
+        return False
+    # A plain text box is happy with the whole skills line; only a picker needs
+    # the values fed in one at a time.
+    return (
+        field.role == "combobox"
+        or field.tag not in {"input", "textarea"}
+        or "multiselect" in field.automation.lower()
+    )
+
+
+def _option_candidates(key: str, desired: str) -> List[str]:
+    """
+    Acceptable answers for a widget, best first.
+
+    Workday's dropdowns are not `<select>`, so their options do not exist in
+    the DOM until the listbox is opened — the backend cannot see them and the
+    match has to happen in the extension. Sending the fallbacks along is what
+    lets a tenant offering only "Phone"/"Main" still answer Phone Device Type.
+    """
+    out = [desired] if desired else []
+    for alternative in OPTION_FALLBACKS.get(key, ()):
+        if alternative.lower() not in {v.lower() for v in out}:
+            out.append(alternative)
+    return out
+
+
+def _emit(field: ScrapedField, base: dict, desired: str, key: str, ftype: str) -> Fill:
+    """Turn a resolved value into the action this particular widget needs."""
+    if ftype == "checkbox":
+        if field.checked:
+            return Fill(**base, action="skip", reason="already checked")
+        if (desired or "").strip().lower() not in {"yes", "true", "y", "1"}:
+            return Fill(**base, action="skip", reason="no answer")
+        return Fill(**base, action="checkbox", value="Yes", key=key)
+
+    if field.tag == "select" or field.options:
+        choice = pick_option_for_key(field.options, desired, key)
+        if not choice:
+            return Fill(**base, action="skip", value=desired, options=field.options,
+                        confidence="low", reason="no matching option")
+        return Fill(**base, action="select", value=choice, options=field.options, key=key)
+
+    if field.role == "combobox" or field.tag not in {"input", "textarea"}:
+        return Fill(**base, action="combobox", value=desired, key=key, confidence="low",
+                    values=_option_candidates(key, desired))
+
+    return Fill(**base, action="text", value=desired, key=key)
+
+
+def _resolve_one(
+    profile: ApplicantProfile,
+    field: ScrapedField,
+    job_title: str,
+    company: str,
+    overwrite: bool,
+) -> Fill:
+    label = field.label or field.placeholder or field.name or ""
+    ftype = (field.type or field.tag or "").lower()
+    base = {"idx": field.idx, "selector": field.selector, "label": label}
+
+    if is_skip_field(label, field.name, field.autocomplete, field.automation):
+        return Fill(**base, action="skip", reason="honeypot")
+
+    if ftype == "file":
+        if not _is_resume_input(field):
+            return Fill(**base, action="skip", reason="not a resume input")
+        return Fill(**base, action="file", key="resume", reason="resume")
+
+    already_set = bool((field.value or "").strip())
+    if already_set and not overwrite and ftype != "checkbox":
+        return Fill(**base, action="skip", reason="already filled")
+
+    # A field inside a repeating block answers for *that* entry — "Company" in
+    # work-experience 2 is the second employer, not the current one.
+    if field.section_kind in KINDS:
+        desired = section_value(profile, field.section_kind, field.section_index or 1, label)
+        key = f"{field.section_kind}[{field.section_index or 1}]"
+        if not desired:
+            return Fill(**base, action="skip", key=key, reason="no value for this entry")
+        return _emit(field, base, desired, key, ftype)
+
+    # A skills picker takes many values, not one string.
+    if _is_skill_multiselect(field, label):
+        skills = skill_list(profile)
+        if skills:
+            return Fill(**base, action="multiselect", value=skills[0], values=skills,
+                        key="skills", confidence="low")
+
+    desired = resolve_value(profile, label, job_title, company)
+    key = match_field_key(label) or ""
+
+    if ftype in {"tel", "phone"} or "phone" in f"{label} {field.name}".lower():
+        desired = _phone_value(profile, field, desired)
+        key = key or "phone"
+
+    # <input type="date"> silently rejects anything that is not YYYY-MM-DD, so
+    # a human answer like "30 days" or "Immediate" becomes a real date.
+    if ftype == "date" and desired and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", desired.strip()):
+        desired = profile.available_date_iso()
+
+    if ftype == "checkbox":
+        if field.checked:
+            return Fill(**base, action="skip", reason="already checked")
+        consent = is_consent_label(label)
+        want_yes = (desired or "").strip().lower() in {"yes", "true", "y", "1"} or consent
+        if not want_yes:
+            return Fill(**base, action="skip", reason="no answer")
+        return Fill(**base, action="checkbox", value="Yes", key=key or "consent",
+                    confidence="high" if consent else "low")
+
+    if not desired:
+        return Fill(**base, action="skip", reason="no match")
+
+    if field.tag == "select" or field.options:
+        choice = pick_option_for_key(field.options, desired, key)
+        if not choice:
+            return Fill(**base, action="skip", value=desired, options=field.options,
+                        confidence="low", reason="no matching option")
+        return Fill(**base, action="select", value=choice, options=field.options,
+                    key=key, confidence="high")
+
+    if field.role == "combobox" or field.tag not in {"input", "textarea"}:
+        return Fill(**base, action="combobox", value=desired, key=key, confidence="low",
+                    values=_option_candidates(key, desired))
+
+    if ftype in TEXTUAL_TYPES or field.tag in {"input", "textarea"}:
+        return Fill(**base, action="text", value=desired, key=key,
+                    confidence="high" if key else "low")
+
+    return Fill(**base, action="skip", reason=f"unsupported type {ftype}")
+
+
+def _resolve_radio_group(
+    profile: ApplicantProfile,
+    group: List[ScrapedField],
+    job_title: str,
+    company: str,
+) -> List[Fill]:
+    """One radio group answers one question: resolve the question, then pick the option."""
+    if any(f.checked for f in group):
+        return []
+    question = next((f.group_label for f in group if f.group_label), "") or group[0].label
+    desired = resolve_value(profile, question, job_title, company)
+    if not desired:
+        return []
+    labels = [f.option_label or f.label or f.value for f in group]
+    choice = pick_option(labels, desired)
+    if not choice:
+        return []
+    for field, option in zip(group, labels):
+        if option == choice:
+            return [Fill(
+                idx=field.idx, selector=field.selector, action="radio",
+                value=choice, label=question, key="radio", confidence="high",
+            )]
+    return []
+
+
+# ─── Endpoints ───────────────────────────────────────────────────────────────
+
+@router.get("/ping")
+def ping():
+    """Extension handshake: is the backend up, and is the profile usable?"""
+    profile = load_profile()
+    missing = profile.missing_required()
+    return {
+        "ok": True,
+        "name": profile.full_name,
+        "email": profile.email,
+        "has_resume": profile.resume_file() is not None,
+        "missing": missing,
+        "ready": not missing,
+    }
+
+
+@router.post("/resolve", response_model=ResolveResponse)
+def resolve(req: ResolveRequest, db: Session = Depends(get_db)):
+    profile = load_profile()
+    job = _lookup_job(db, req.url)
+    job_title = req.job_title or (job.title if job else "") or _clean_title(req.page_title)
+    company = req.company or (job.company if job else "") or _company_from_url(req.url)
+
+    fills: List[Fill] = []
+    radio_groups: Dict[str, List[ScrapedField]] = {}
+
+    for field in req.fields:
+        if (field.type or "").lower() == "radio":
+            radio_groups.setdefault(field.name or f"__{field.idx}", []).append(field)
+            continue
+        fills.append(_resolve_one(profile, field, job_title, company, req.overwrite))
+
+    for group in radio_groups.values():
+        fills.extend(_resolve_radio_group(profile, group, job_title, company))
+
+    actionable = [f for f in fills if f.action != "skip"]
+    answered = {f.idx for f in actionable}
+
+    unresolved = [
+        (f.label or f.placeholder or f.name)
+        for f in req.fields
+        if f.required
+        and f.idx not in answered
+        and not (f.value or "").strip()
+        and not f.checked
+        and (f.type or "").lower() != "radio"
+    ]
+    # A required radio group counts as unanswered only if no option in it got a fill.
+    for group in radio_groups.values():
+        if any(f.required for f in group) and not any(f.idx in answered for f in group):
+            question = next((f.group_label for f in group if f.group_label), "") or group[0].label
+            if question:
+                unresolved.append(question)
+
+    return ResolveResponse(
+        ats=detect_ats(req.url),
+        job_title=job_title,
+        company=company,
+        job_id=job.id if job else None,
+        known_job=bool(job),
+        has_resume=profile.resume_file() is not None,
+        sections_needed=needed_counts(profile),
+        fills=fills,
+        unresolved=[u for u in unresolved if u][:20],
+        stats={
+            "scraped": len(req.fields),
+            "filled": len(actionable),
+            "skipped": len(fills) - len(actionable),
+            "unresolved": len(unresolved),
+        },
+    )
+
+
+@router.get("/resume")
+def resume():
+    """Resume bytes for the extension to drop into a file input."""
+    profile = load_profile()
+    path = profile.resume_file()
+    if not path:
+        raise HTTPException(status_code=404, detail="No resume on file — upload one in Settings")
+    mime = mimetypes.guess_type(path.name)[0] or "application/pdf"
+    return {
+        "filename": path.name,
+        "mime": mime,
+        "b64": base64.b64encode(path.read_bytes()).decode("ascii"),
+    }
+
+
+@router.post("/track")
+def track(req: TrackRequest, db: Session = Depends(get_db)):
+    """Record an application submitted by hand in the browser, so the dashboard knows."""
+    job = _lookup_job(db, req.url)
+    created = False
+    if not job:
+        job = Job(
+            id=str(uuid.uuid4()),
+            title=req.title or "Untitled role",
+            company=req.company or _company_from_url(req.url) or "Unknown",
+            platform="extension",
+            url=req.url,
+            location="",
+            jd_text="",
+            relevance_score=100.0,
+            fit_reason="Added from the browser extension",
+            missing_skills="[]",
+            seniority_level="entry",
+            is_engineering_role=True,
+            status="discovered",
+            ats_type=detect_ats(req.url),
+        )
+        db.add(job)
+        created = True
+
+    if req.status == "applied":
+        job.status = "applied"
+        job.apply_status = "applied"
+        job.apply_error = ""
+        job.applied_at = datetime.utcnow()
+    elif not job.visited_at:
+        job.visited_at = datetime.utcnow()
+    db.commit()
+    db.refresh(job)
+
+    seen_ledger.mark(
+        db,
+        url=job.url,
+        status="applied" if req.status == "applied" else "visited",
+        reason=req.notes or "browser extension",
+        title=job.title or "",
+        company=job.company or "",
+        platform=job.platform or "extension",
+        commit=True,
+    )
+    return {"success": True, "job_id": job.id, "created": created, "status": job.status}

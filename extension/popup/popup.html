@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>TempoApply</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header>
+      <div class="bolt">⚡</div>
+      <div class="titles">
+        <h1>TempoApply</h1>
+        <p id="subtitle">Checking backend…</p>
+      </div>
+      <span class="dot" id="dot"></span>
+    </header>
+
+    <section class="profile" id="profile" hidden>
+      <div class="row"><span>Name</span><b id="p-name">—</b></div>
+      <div class="row"><span>Email</span><b id="p-email">—</b></div>
+      <div class="row"><span>Resume</span><b id="p-resume">—</b></div>
+    </section>
+
+    <div class="alert" id="alert" hidden></div>
+
+    <button class="primary" id="fill">Autofill this page</button>
+    <button class="ghost" id="show">Show the panel</button>
+
+    <details>
+      <summary>Backend URL</summary>
+      <div class="api">
+        <input id="api" type="url" spellcheck="false" placeholder="http://localhost:8000" />
+        <button class="ghost small" id="save">Save</button>
+      </div>
+    </details>
+
+    <footer>
+      <a href="http://localhost:3000" target="_blank" rel="noreferrer">Open dashboard</a>
+      <span><kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>F</kbd></span>
+    </footer>
+
+    <script src="popup.js"></script>
+  </body>
+</html>
