@@ -17,4 +17,22 @@ DEFAULT_SCAN_PLATFORMS = SCAN_PLATFORMS
 # Scrapers kept in codebase but not run unless explicitly requested
 OPTIONAL_PLATFORMS = ["indeed", "naukri", "instahyre", "wellfound"]
 
-ALL_PLATFORMS = SCAN_PLATFORMS + OPTIONAL_PLATFORMS + ["manual"]
+# Sources that create jobs without a scraper: added by hand, or tracked by the
+# browser extension. "extension" was missing, so every application recorded
+# from the extension was absent from the analytics platform breakdown — the
+# rows existed, nothing counted them.
+MANUAL_SOURCES = ["manual", "extension"]
+
+
+def _unique(*groups) -> list:
+    """Preserve order, drop repeats — "naukri" is in two of these lists."""
+    seen, out = set(), []
+    for group in groups:
+        for name in group:
+            if name not in seen:
+                seen.add(name)
+                out.append(name)
+    return out
+
+
+ALL_PLATFORMS = _unique(SCAN_PLATFORMS, OPTIONAL_PLATFORMS, MANUAL_SOURCES)

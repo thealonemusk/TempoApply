@@ -310,6 +310,11 @@
     }
     if (!section) {
       if (isTop) {
+        // Esc in the top frame has to stand the other frames down too —
+        // otherwise every embedded frame keeps its crosshair and its capture
+        // listeners, and the next click in the form is swallowed by a picker
+        // the user thought they had cancelled.
+        send({ type: "broadcast", message: { type: "TA_PICK_CANCEL" } });
         // Drop the aggregation we armed, or its grace timer fires later and
         // overwrites the panel with an empty tally.
         state.pending = null;

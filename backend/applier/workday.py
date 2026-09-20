@@ -19,12 +19,10 @@ from backend.applier.filler import (
     captcha_present,
     click_named_button,
     click_next,
-    click_submit,
     dismiss_overlays,
     fill_form,
     finish_application,
     screenshot_failure,
-    unfilled_required,
     upload_resume,
     wait_settled,
 )

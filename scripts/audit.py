@@ -57,6 +57,8 @@ def check_python() -> None:
     if not syntax:
         ok(f"{len(files)} files parse")
 
+    _check_undefined_names(files)
+
     failed = 0
     for f in sorted((ROOT / "backend").rglob("*.py")):
         if not relevant(f):
@@ -74,6 +76,56 @@ def check_python() -> None:
             bad(f"import {module}: {type(exc).__name__}: {str(exc)[:70]}")
     if not failed:
         ok("every backend module imports")
+
+
+def _check_undefined_names(files: list) -> None:
+    """
+    Names used but never bound — a NameError waiting for the right code path.
+
+    Importing a module proves its top level runs; it proves nothing about a
+    branch inside a function. `adapters.py` called `apply_url_for_ats()`
+    without importing it for two sessions: every Lever application died on the
+    first line of `apply_lever`, the broad `except Exception` in the engine
+    turned it into `apply_status="failed"`, and the import check here passed
+    the whole time because the module itself imported fine.
+    """
+    import builtins
+
+    safe = set(dir(builtins)) | {
+        "__file__", "__name__", "__doc__", "__package__", "__spec__",
+        "__builtins__", "__loader__",
+    }
+    found = []
+    for f in files:
+        try:
+            tree = ast.parse(f.read_text(encoding="utf-8"))
+        except SyntaxError:
+            continue
+        bound = set(safe)
+        for n in ast.walk(tree):
+            if isinstance(n, ast.Import):
+                bound.update((a.asname or a.name).split(".")[0] for a in n.names)
+            elif isinstance(n, ast.ImportFrom):
+                bound.update(a.asname or a.name for a in n.names)
+            elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                bound.add(n.name)
+            elif isinstance(n, ast.Name) and isinstance(n.ctx, (ast.Store, ast.Del)):
+                bound.add(n.id)
+            elif isinstance(n, ast.arg):
+                bound.add(n.arg)
+            elif isinstance(n, (ast.Global, ast.Nonlocal)):
+                bound.update(n.names)
+            elif isinstance(n, ast.ExceptHandler) and n.name:
+                bound.add(n.name)
+        for n in ast.walk(tree):
+            if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load) and n.id not in bound:
+                found.append(f"{f.relative_to(ROOT)}:{n.lineno} {n.id}")
+
+    if found:
+        for item in found:
+            bad(f"undefined name {item}")
+    else:
+        ok("no undefined names")
 
 
 # ── 2. Declared dependencies match reality ───────────────────────────────────

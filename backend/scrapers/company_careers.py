@@ -7,7 +7,6 @@ Platform name: "company_careers"
 
 import asyncio
 import re
-import time
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional
 from loguru import logger

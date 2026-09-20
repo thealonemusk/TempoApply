@@ -130,8 +130,11 @@ ROLE_BAD = ("frontend only", "ui/ux", "designer", "qa ", "test engineer", "sdet"
             "data entry", "analyst", "manager", "director", "principal", "staff ",
             "senior staff", "lead ", "architect", "head of", "vp ")
 
+# "ii" belongs here with "iii" and "iv": `filter_utils` already rejects a
+# "Software Engineer II" title outright, so a job carrying one into selection
+# was scoring as though it were entry level.
 SENIOR_MARKERS = ("senior", "sr.", "sr ", "staff", "principal", "lead", "manager",
-                  "director", "head", "architect", "vp", "iii", "iv")
+                  "director", "head", "architect", "vp", "ii", "iii", "iv")
 
 
 def role_score(title: str) -> float:

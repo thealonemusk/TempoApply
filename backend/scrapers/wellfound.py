@@ -1,7 +1,6 @@
 """
 Wellfound (formerly AngelList Talent) Job Scraper — searches jobs using public landing pages.
 """
-import asyncio
 import json
 from typing import List
 from bs4 import BeautifulSoup

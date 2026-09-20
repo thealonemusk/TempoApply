@@ -4,16 +4,19 @@ from __future__ import annotations
 
 from typing import List, Tuple
 
+from backend.autopilot.select import Tier, company_tier
 from backend.scrapers.filter_utils import parse_experience_years, ENTRY_TITLE_SIGNALS
-from backend.scrapers.company_list import TOP_COMPANIES
 
-PREMIUM_COMPANIES = {c["name"].lower() for c in TOP_COMPANIES if c.get("type") != "skip"}
-
-STAFFING_KEYWORDS = [
-    "tcs", "tata consultancy", "infosys", "wipro", "cognizant", "hcl ",
-    "accenture", "capgemini", "tech mahindra", "ltimindtree", "mphasis",
-    "genpact", "cyient", "birlasoft", "persistent systems",
-]
+# Company quality comes from `autopilot.select.company_tier`, which is the
+# curated FAANG/ELITE/STRONG/KNOWN ranking and matches on whole words.
+#
+# This used to score against TOP_COMPANIES — the list of career boards the
+# scrapers crawl, which is not a quality ranking at all. Two consequences:
+# Google, Microsoft, Amazon and Uber got no bonus because they run their own
+# ATS and live in bigtech.py, while "Accenture India" and "Adobe India" did.
+# The test was also `premium in company or company in premium`, and the
+# reversed half is true for any short string — an empty company name matched
+# every premium name and scored a perfect 100.
 
 
 def _title_matches_role(title: str, roles: List[str]) -> Tuple[bool, bool]:
@@ -88,9 +91,16 @@ def score_job(
             score += 8
             reasons.append("Remote-friendly")
 
-    if any(premium in company or company in premium for premium in PREMIUM_COMPANIES):
-        score += 12
-        reasons.append("Target company")
+    tier = company_tier(job_data.get("company", ""))
+    if tier >= Tier.ELITE:
+        score += 14
+        reasons.append(f"{tier.name.capitalize()} company")
+    elif tier is Tier.STRONG:
+        score += 10
+        reasons.append("Well-known company")
+    elif tier is Tier.KNOWN:
+        score += 5
+        reasons.append("Recognised company")
 
     exp_str = job_data.get("experience_required", "")
     exp_range = (
@@ -115,7 +125,9 @@ def score_job(
         score -= 10
         reasons.append("Thin career listing")
 
-    if any(s in company for s in STAFFING_KEYWORDS):
+    # Same source as the bonus above, so the two can never disagree — the old
+    # STAFFING_KEYWORDS list was a second, shorter copy of EXCLUDED_MARKERS.
+    if tier is Tier.EXCLUDED:
         score -= 15
         reasons.append("Staffing / IT services")
 

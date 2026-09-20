@@ -8,16 +8,12 @@ from urllib.parse import urljoin, urlparse
 from loguru import logger
 from playwright.async_api import Page
 
-from backend.applier.ats import detect_ats, first_ats_url
+from backend.applier.ats import apply_url_for_ats, detect_ats, first_ats_url
 from backend.applier.filler import (
     application_frame,
-    application_succeeded,
     apply_result,
-    captcha_present,
     click_apply,
-    click_named_button,
     click_next,
-    click_submit,
     dismiss_overlays,
     fill_form,
     finish_application,

@@ -98,9 +98,15 @@ class ApplicantProfile:
         digits = re.sub(r"\D", "", self.phone or "")
         if digits.startswith("91") and len(digits) >= 12:
             return "+" + digits
+        # "09939964663" is how an Indian number is commonly written down. The
+        # trunk prefix is not part of the international form, and without this
+        # the number fell through every branch below and was emitted raw — an
+        # invalid value in a field that asked for E.164.
+        if len(digits) == 11 and digits.startswith("0"):
+            digits = digits[1:]
         if len(digits) == 10:
             return "+91" + digits
-        if self.phone.startswith("+"):
+        if (self.phone or "").startswith("+"):
             return "+" + digits
         return self.phone or ""
 
