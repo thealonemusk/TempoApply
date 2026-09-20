@@ -14,6 +14,7 @@ from backend.scrapers.filter_utils import (
     is_career_listing_eligible,
     passes_hard_filters,
 )
+from backend.scrapers import http
 from backend.scrapers.scoring import score_job
 from backend.scrapers.registry import SCRAPER_REGISTRY, SCRAPER_LABELS, resolve_discovery_roles
 from backend.config import settings
@@ -193,6 +194,8 @@ async def run_scan_pipeline(
     roles = resolve_discovery_roles(settings.target_roles_list)
     logger.info(f"Targeting roles (discovery): {roles}")
     clear_stop()
+    # Per-scan, so a host throttled an hour ago is tried again now.
+    http.reset_rate_limit_state()
 
     all_raw_jobs = []
     tasks = []
@@ -251,11 +254,22 @@ async def run_scan_pipeline(
     finally:
         db.close()
 
-    return {
+    throttled = http.rate_limited_hosts()
+    result = {
         "total_scraped": len(all_raw_jobs),
         "qualified": len(all_raw_jobs),
         "new_in_db": new_count,
         "visited_removed": visited_removed,
         "stale_removed": stale_removed,
         "platforms": platforms,
+        "rate_limited": throttled,
     }
+    # A scan that returned nothing because a source blocked us must say so.
+    # Reporting "0 new jobs" for a 429 sends you looking at the filters.
+    if throttled:
+        names = ", ".join(h.replace("www.", "") for h in throttled)
+        result["warning"] = (
+            f"{names} rate-limited this scan (HTTP 429), so its results are "
+            f"missing or incomplete. Wait ~10 minutes before scanning again."
+        )
+    return result

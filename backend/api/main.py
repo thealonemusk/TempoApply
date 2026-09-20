@@ -233,11 +233,58 @@ class UnblockRequest(BaseModel):
     url: str
 
 
+CLEARABLE_STATUSES = ["discovered", "scored", "tailored", "ignored", "rejected"]
+
+
 @app.delete("/api/jobs/clear")
-def clear_discovered_jobs(db: Session = Depends(get_db)):
-    """Delete all jobs that are still in 'discovered' or 'scored' status to declutter the dashboard."""
-    jobs_to_delete = db.query(Job).filter(Job.status.in_(["discovered", "scored"])).all()
-    seen_ledger.mark_jobs(db, jobs_to_delete, "dismissed", "cleared from the dashboard")
+def clear_discovered_jobs(
+    include_applied: bool = Query(False),
+    db: Session = Depends(get_db),
+):
+    """
+    Empty the working queue.
+
+    Two things this deliberately does NOT do any more:
+
+    * It no longer marks what it removes as "dismissed". Dismissed is a
+      blocking status, so tidying the dashboard was quietly blacklisting every
+      job on it — after a few rounds a scan finding hundreds of postings could
+      insert twenty, the rest being permanently blocked. Cleared jobs are now
+      recorded as "cleared", which is observable but not blocking, so a live
+      posting can be surfaced again by the next scan.
+    * It does not touch a job that is mid-process (applying, interviewing, an
+      offer) — only finished or never-started ones.
+
+    `include_applied` also removes rows already applied to. The application
+    itself stays recorded in the seen ledger, which is what stops the job
+    being offered again, but the `jobs` row and its Application detail go.
+    """
+    statuses = list(CLEARABLE_STATUSES)
+    if include_applied:
+        statuses.append("applied")
+
+    jobs_to_delete = db.query(Job).filter(Job.status.in_(statuses)).all()
+
+    # An applied row keeps its "applied" ledger status; only the rest become
+    # "cleared". Downgrading applied to cleared would offer the job back.
+    applied_count = 0
+    tidied = []
+    for job in jobs_to_delete:
+        if job.status == "applied" or job.apply_status == "applied":
+            applied_count += 1
+            seen_ledger.mark(
+                db,
+                url=job.url,
+                status="applied",
+                reason="cleared from the dashboard after applying",
+                title=job.title or "",
+                company=job.company or "",
+                platform=job.platform or "",
+            )
+        else:
+            tidied.append(job)
+    seen_ledger.mark_jobs(db, tidied, "cleared", "cleared from the dashboard")
+
     deleted_count = 0
     for job in jobs_to_delete:
         if job.application:
@@ -245,7 +292,11 @@ def clear_discovered_jobs(db: Session = Depends(get_db)):
         db.delete(job)
         deleted_count += 1
     db.commit()
-    return {"success": True, "deleted_count": deleted_count}
+    return {
+        "success": True,
+        "deleted_count": deleted_count,
+        "applied_removed": applied_count,
+    }
 
 
 @app.post("/api/jobs/purge-visited")

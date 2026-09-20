@@ -11,7 +11,8 @@ import { JobCard, JobRow } from '@/components/JobRow';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 
-const JOBS_PER_PAGE = 20;
+// A scan's whole result should be readable without paging through it.
+const JOBS_PER_PAGE = 50;
 const MANUAL_APPLY_STATUSES = new Set(['failed', 'needs_review', 'skipped']);
 
 export default function JobsPage() {
@@ -72,7 +73,9 @@ export default function JobsPage() {
         if (!status.running) {
           setScanning(false);
           setScanStalled(false);
-          const failure = status.last_result?.error;
+          // A scan can finish "successfully" having been blocked by a
+          // source — reporting only `error` made that look like zero results.
+          const failure = status.last_result?.error ?? status.last_result?.warning;
           if (typeof failure === 'string') setScanError(failure);
         }
       } catch {}
@@ -151,10 +154,23 @@ export default function JobsPage() {
   };
 
   const handleClearJobs = async () => {
-    if (!confirm('Clear all discovered jobs that are not applied?')) return;
-    await api.clearDiscoveredJobs();
-    setCurrentPage(1);
-    loadJobs();
+    const appliedCount = jobs.filter(
+      (j) => j.status === 'applied' || j.apply_status === 'applied',
+    ).length;
+    const rest = jobs.length - appliedCount;
+    const detail = appliedCount
+      ? `Remove ${rest} pending and ${appliedCount} applied job${appliedCount === 1 ? '' : 's'} from the list?\n\n` +
+        'Applied ones stay recorded in history, so they will not come back in a scan.'
+      : `Remove ${rest} job${rest === 1 ? '' : 's'} from the list?`;
+    if (!confirm(detail)) return;
+    try {
+      await api.clearDiscoveredJobs(true);
+      setCurrentPage(1);
+      await loadJobs();
+      setScanError('');
+    } catch (err) {
+      setScanError(err instanceof Error ? err.message : 'Could not clear jobs');
+    }
   };
 
   const handleApply = async (id: string) => {

@@ -10,11 +10,13 @@ scan after scan.
 This ledger outlives those purges. It answers one question - "have we already
 dealt with this posting?" - and separates two cases:
 
-  * BLOCKING statuses are decisions: the user opened it, applied to it,
-    dismissed it, or it aged out of the queue. Never show it again.
-  * Non-blocking statuses ("seen", "filtered", "discovered") are observability.
-    Hard filters re-run cheaply on every scan, so a job rejected by a filter is
-    recorded with its reason but is free to come back if the filters change.
+  * BLOCKING statuses are decisions the user made about that specific job:
+    they opened it, applied to it, or dismissed it. Never show it again.
+  * Non-blocking statuses ("seen", "filtered", "discovered", "expired",
+    "cleared") are observability. Hard filters re-run cheaply on every scan, so
+    a job rejected by a filter is recorded with its reason but is free to come
+    back if the filters change — and ageing out of the queue or being tidied
+    off the dashboard are not decisions about the job at all.
 """
 from __future__ import annotations
 
@@ -29,6 +31,12 @@ from sqlalchemy.orm import Session
 from backend.db.models import Job, SeenJob
 
 # Decisions. A job whose ledger status is one of these is never re-inserted.
+#
+# "cleared" is deliberately NOT here. Tidying the dashboard is housekeeping,
+# not a judgement on the job — but it used to be recorded as "dismissed", so
+# every Clear silently blacklisted the whole visible queue for good. After a
+# few rounds of tidying, a scan that found hundreds of postings could insert
+# twenty, because everything else was already on the permanent blocklist.
 BLOCKING_STATUSES = {
     "visited",
     "dismissed",
@@ -37,6 +45,10 @@ BLOCKING_STATUSES = {
     "rejected",
     "offer",
 }
+
+# Recorded so a scan can still report what happened to a job, without that
+# record stopping the job coming back.
+NON_BLOCKING_STATUSES = {"seen", "discovered", "filtered", "expired", "cleared"}
 
 # Query parameters that identify the referrer rather than the posting. Stripping
 # them lets the same job arrive from two searches and dedupe to one row. Only

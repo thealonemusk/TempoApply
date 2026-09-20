@@ -59,8 +59,13 @@ export const api = {
   purgeVisitedJobs: () =>
     request<{ removed_count: number }>('/api/jobs/purge-visited', { method: 'POST' }),
 
-  clearDiscoveredJobs: () =>
-    request<{ deleted_count: number }>('/api/jobs/clear', { method: 'DELETE' }),
+  // `includeApplied` also removes rows already applied to. They stay in the
+  // seen ledger, so clearing them does not offer the job back at the next scan.
+  clearDiscoveredJobs: (includeApplied = false) =>
+    request<{ deleted_count: number; applied_removed: number }>(
+      `/api/jobs/clear${includeApplied ? '?include_applied=true' : ''}`,
+      { method: 'DELETE' }
+    ),
 
   purgeExperiencedJobs: () =>
     request<{ purged_count: number }>('/api/jobs/purge-experienced', { method: 'POST' }),

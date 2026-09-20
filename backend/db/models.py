@@ -147,3 +147,38 @@ def _migrate_db():
             if name not in col_names:
                 conn.execute(text(f"ALTER TABLE jobs ADD COLUMN {name} {ddl}"))
                 conn.commit()
+    _release_cleared_jobs()
+
+
+def _release_cleared_jobs() -> None:
+    """
+    Undo the blocklist entries that tidying the dashboard used to create.
+
+    Clear recorded everything it removed as "dismissed", a blocking status, so
+    each tidy-up permanently hid that whole page of jobs from every future
+    scan. On this database that was 235 rows — which is why a scan that found
+    hundreds of postings was inserting about twenty.
+
+    Only rows written by Clear are touched, matched on their exact reason
+    string; a job genuinely dismissed by hand stays dismissed. Idempotent.
+    """
+    from sqlalchemy import text as _text
+
+    with engine.connect() as conn:
+        try:
+            result = conn.execute(
+                _text(
+                    "UPDATE seen_jobs SET status = 'cleared' "
+                    "WHERE status = 'dismissed' AND reason = :reason"
+                ),
+                {"reason": "cleared from the dashboard"},
+            )
+            conn.commit()
+        except Exception as exc:  # a failed repair must not block startup
+            print(f"Seen ledger repair skipped: {exc}")
+            return
+    if result.rowcount:
+        print(
+            f"Seen ledger: released {result.rowcount} job(s) blocked by an old "
+            f"Clear; they can be rediscovered by the next scan."
+        )

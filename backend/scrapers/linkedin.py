@@ -27,16 +27,42 @@ USER_AGENT = (
 HEADERS = {"User-Agent": USER_AGENT}
 
 # Broader India coverage beyond user settings (scoring still ranks preferred cities).
+#
+# Every entry here multiplies the request count by the number of roles and
+# pages, so this list is the single biggest lever on whether LinkedIn blocks
+# the scan. "India" already returns roles in every city; the named cities are
+# here only because LinkedIn ranks a city query differently, so a handful of
+# the largest markets is worth it and a long tail is not.
 EXTRA_LOCATIONS = [
     "India",
-    "Bengaluru", "Bangalore", "Hyderabad", "Pune", "Mumbai",
-    "Gurugram", "Gurgaon", "Noida", "Delhi", "Chennai", "Kolkata",
+    "Bengaluru", "Hyderabad", "Pune", "Noida", "Mumbai",
 ]
+
+# LinkedIn resolves these to the same geo, so searching both doubles the
+# requests for an identical result set.
+LOCATION_SYNONYMS = {
+    "bangalore": "bengaluru",
+    "gurgaon": "gurugram",
+    "new delhi": "delhi",
+    "bombay": "mumbai",
+    "calcutta": "kolkata",
+}
+
 SKIP_SEARCH_LOCATIONS = {"remote", "work from home", "wfh", "anywhere"}
+
+# Searching for a city whose jobs the hard filters throw away is pure cost.
+from backend.scrapers.filter_utils import EXCLUDED_CITIES
 
 LINKEDIN_PAGES = 3
 PAGE_SIZE = 10
-JD_WORKERS = 6
+
+# Two JD fetches per listing, and the search pages are still going. Six
+# workers on a host that throttles is how a scan earns a block.
+JD_WORKERS = 2
+
+# Stop searching once this many pages have failed outright. Past this point
+# LinkedIn has decided, and the remaining requests only deepen the block.
+MAX_FAILED_PAGES = 8
 
 
 def _merge_locations(locations: List[str]) -> List[str]:
@@ -44,7 +70,11 @@ def _merge_locations(locations: List[str]) -> List[str]:
     seen: Set[str] = set()
     for loc in list(locations) + EXTRA_LOCATIONS:
         key = loc.lower().strip()
+        key = LOCATION_SYNONYMS.get(key, key)
         if not key or key in seen or key in SKIP_SEARCH_LOCATIONS:
+            continue
+        # A city the hard filters reject is a search we pay for and discard.
+        if any(city in key for city in EXCLUDED_CITIES):
             continue
         seen.add(key)
         merged.append(loc.strip())
@@ -52,15 +82,16 @@ def _merge_locations(locations: List[str]) -> List[str]:
 
 
 def _search_queries(role: str) -> List[str]:
-    """Entry-focused query variants to surface more relevant LinkedIn results."""
+    """
+    Query variants per role.
+
+    One. The "<role> 0-2 years" variant doubled every scan's request count to
+    surface jobs the plain query already returns — LinkedIn matches on the
+    description, and the experience cap is enforced by the hard filters
+    afterwards regardless. It was not worth a block.
+    """
     base = role.strip()
-    if not base:
-        return []
-    queries = [base]
-    lower = base.lower()
-    if "0-2 years" not in lower:
-        queries.append(f"{base} 0-2 years")
-    return queries
+    return [base] if base else []
 
 
 def _parse_search_cards(html: str) -> List[dict]:
@@ -150,6 +181,10 @@ def _scrape_job_detail_bs4(url: str) -> dict:
             jd_text = _jd_from_html(resp.content)
             if len(jd_text) >= 80:
                 return {"jd_text": jd_text, "easy_apply": False, "recruiter_profile": ""}
+        except http.RateLimited:
+            # In cooldown: every remaining listing will fail the same way, so
+            # return quietly and let the caller drop what it cannot verify.
+            return empty
         except Exception as exc:
             logger.debug(f"Could not scrape job detail {page_url}: {exc}")
     return empty
@@ -174,6 +209,12 @@ def _collect_listings(
                         start = page * PAGE_SIZE
                         try:
                             batch = _fetch_search_page(query, location, start, time_filter)
+                        except http.RateLimited as exc:
+                            # LinkedIn has put us in cooldown. Nothing further
+                            # in this scan will succeed, and asking anyway only
+                            # lengthens the block.
+                            logger.warning(f"LinkedIn stopped early: {exc}")
+                            return listings
                         except Exception as exc:
                             logger.warning(
                                 f"LinkedIn page failed for '{query}' / '{location}' @ {start}: {exc}"
@@ -185,6 +226,11 @@ def _collect_listings(
                             # query, but count it so the scan reports the gap
                             # instead of looking like a clean empty result.
                             failed_pages += 1
+                            if failed_pages >= MAX_FAILED_PAGES:
+                                logger.warning(
+                                    f"LinkedIn: giving up after {failed_pages} failed pages"
+                                )
+                                return listings
                             break
 
                         if not batch:
@@ -276,9 +322,21 @@ async def scrape_linkedin_jobs(
 
     logger.info(f"LinkedIn: searching {len(roles)} roles across {len(locations)} locations")
 
+    searches = len(roles) * len(locations) * LINKEDIN_PAGES
+    logger.info(
+        f"LinkedIn: searching {len(roles)} roles x {len(locations)} locations "
+        f"x {LINKEDIN_PAGES} pages = up to {searches} requests"
+    )
+
     listings = await asyncio.to_thread(_collect_listings, roles, locations, max_jobs)
     logger.info(f"LinkedIn: {len(listings)} listings passed title pre-filter")
 
     jobs = await asyncio.to_thread(_enrich_listings, listings)
     logger.info(f"LinkedIn: {len(jobs)} jobs after JD validation")
+
+    if "www.linkedin.com" in http.rate_limited_hosts():
+        logger.warning(
+            "LinkedIn rate-limited this scan (HTTP 429). Results are incomplete — "
+            "wait ~10 minutes before scanning again."
+        )
     return jobs

@@ -208,6 +208,120 @@ def check_extension() -> None:
 
 # ── 6. Secrets must never be tracked ─────────────────────────────────────────
 
+def check_ledger_semantics() -> None:
+    """
+    Housekeeping must never blacklist a job.
+
+    This is a defect that actually shipped: Clear recorded everything it
+    removed as "dismissed", which is a blocking status, so tidying the
+    dashboard permanently hid that whole page from every future scan. 235 live
+    postings were blocked this way before it was noticed, and the symptom —
+    "the scan only finds twenty jobs" — looks nothing like the cause.
+    """
+    section("Seen ledger")
+    from backend import seen_ledger
+
+    for status in ("cleared", "expired", "filtered", "seen", "discovered"):
+        if status in seen_ledger.BLOCKING_STATUSES:
+            bad(f"'{status}' blocks rediscovery, but it is not a user decision")
+        else:
+            ok(f"'{status}' does not block rediscovery")
+
+    for status in ("applied", "visited", "dismissed"):
+        if status in seen_ledger.BLOCKING_STATUSES:
+            ok(f"'{status}' still blocks rediscovery")
+        else:
+            bad(f"'{status}' is a decision and must block rediscovery")
+
+    # Read the actual calls, not the text. A substring search here matched the
+    # word "dismissed" in the docstring explaining why it is no longer used.
+    tree = ast.parse((ROOT / "backend" / "api" / "main.py").read_text(encoding="utf-8"))
+    clear_fn = next(
+        (
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == "clear_discovered_jobs"
+        ),
+        None,
+    )
+    if clear_fn is None:
+        bad("clear_discovered_jobs is missing")
+        return
+
+    blocking_marks = []
+    for node in ast.walk(clear_fn):
+        if not isinstance(node, ast.Call):
+            continue
+        name = getattr(node.func, "attr", getattr(node.func, "id", ""))
+        if name not in {"mark", "mark_jobs"}:
+            continue
+        args = [a.value for a in node.args if isinstance(a, ast.Constant)]
+        args += [k.value.value for k in node.keywords
+                 if isinstance(k.value, ast.Constant) and k.arg == "status"]
+        blocking_marks += [a for a in args
+                           if isinstance(a, str) and a in seen_ledger.BLOCKING_STATUSES
+                           and a != "applied"]
+
+    if blocking_marks:
+        bad(f"clear marks removed jobs {sorted(set(blocking_marks))} — that blacklists them")
+    else:
+        ok("clear does not blacklist what it removes")
+
+
+LINKEDIN_REQUEST_BUDGET = 600
+
+
+def check_scrape_budget() -> None:
+    """
+    A scan must not out-request what a host will tolerate.
+
+    LinkedIn's guest endpoint was being asked for 1,296 search pages per scan,
+    back to back with no gap, and answered with 429s — so the scan reported
+    zero jobs and nothing said why. Request count is the product of roles x
+    query variants x locations x pages, so it grows silently the moment anyone
+    adds a city or a query variant. This is the tripwire for that.
+    """
+    section("Scrape budget")
+    from backend.config import settings
+    from backend.scrapers import http
+    from backend.scrapers.linkedin import LINKEDIN_PAGES, _merge_locations, _search_queries
+    from backend.scrapers.registry import resolve_discovery_roles
+
+    interval = http.HOST_MIN_INTERVAL.get("www.linkedin.com", 0)
+    if interval <= 0:
+        bad("LinkedIn requests are unpaced — that is what earned the 429s")
+    else:
+        ok(f"LinkedIn paced at {interval}s between requests")
+
+    if http.RATE_LIMIT_STRIKES <= 0 or http.RATE_LIMIT_COOLDOWN_SEC <= 0:
+        bad("no rate-limit circuit breaker — a block will be hammered into a longer one")
+    else:
+        ok(f"circuit breaker after {http.RATE_LIMIT_STRIKES} consecutive 429s")
+
+    roles = resolve_discovery_roles(settings.target_roles_list)
+    locations = _merge_locations(settings.preferred_locations_list)
+    queries = sum(len(_search_queries(r)) for r in roles)
+    total = queries * len(locations) * LINKEDIN_PAGES
+    if total > LINKEDIN_REQUEST_BUDGET:
+        bad(
+            f"a LinkedIn scan would issue up to {total} requests "
+            f"({len(roles)} roles x {len(locations)} locations x {LINKEDIN_PAGES} pages) "
+            f"— budget is {LINKEDIN_REQUEST_BUDGET}"
+        )
+    else:
+        ok(f"LinkedIn scan budget: up to {total} requests (limit {LINKEDIN_REQUEST_BUDGET})")
+
+    excluded = [
+        loc for loc in locations
+        if any(city in loc.lower() for city in ("chennai", "kochi", "cochin", "ernakulam"))
+    ]
+    if excluded:
+        bad(f"searching cities the filters reject: {excluded}")
+    else:
+        ok("no searches spent on excluded cities")
+
+
 def check_secrets() -> None:
     section("Secrets")
     ignored = (ROOT / ".gitignore").read_text(encoding="utf-8")
@@ -224,6 +338,8 @@ def main() -> None:
     check_control_chars()
     check_wiring()
     check_extension()
+    check_ledger_semantics()
+    check_scrape_budget()
     check_secrets()
 
     print()
