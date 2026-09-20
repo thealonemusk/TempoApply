@@ -1,13 +1,9 @@
 import type { Metadata, Viewport } from 'next';
 import './globals.css';
-import { ThemeProvider } from '@/components/ThemeProvider';
 
 export const metadata: Metadata = {
-  title: 'TempoApply',
-  description: 'Job discovery for early-career engineers',
-  icons: {
-    icon: '/vercel.png',
-  },
+  title: 'TempoApply — AI Job Application Agent',
+  description: 'Your AI-powered job application command centre',
 };
 
 // `viewportFit: 'cover'` lets the page paint into the iPhone's safe areas; the
@@ -21,9 +17,9 @@ export const viewport: Viewport = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" suppressHydrationWarning>
-      <body className="min-h-screen antialiased">
-        <ThemeProvider>{children}</ThemeProvider>
+    <html lang="en">
+      <body className="min-h-screen bg-newsprint text-ink antialiased">
+        {children}
       </body>
     </html>
   );

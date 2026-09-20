@@ -4,7 +4,7 @@ config/.env
 
 # Python
 __pycache__
-venv
+.venv
 *.db
 # Backend
 backend/db/*.db
