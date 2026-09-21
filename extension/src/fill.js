@@ -169,16 +169,64 @@
     return el.checked;
   }
 
-  /** Click the option whose text best matches `want`, from an open listbox. */
+  /**
+   * The options on screen right now.
+   *
+   * The `.iti__country-list` exclusion is load-bearing: roughly 240 hidden
+   * phone-country rows sort first and consume the scan window, which makes
+   * every dropdown look like it never opened.
+   */
+  function visibleOptions() {
+    return Array.from(document.querySelectorAll(OPTION_SELECTOR)).filter(
+      (o) => isVisible(o) && !o.closest(".iti__country-list")
+    );
+  }
+
+  // Rows a listbox shows while it is still working. They are not answers, and
+  // clicking one picks nothing.
+  const TRANSIENT_OPTION =
+    /^(loading|searching|please wait|no (matching )?(results|items|options)|no results found|start typing|type to search|search)\b/;
+
+  // How long to keep waiting for a menu that has not reacted to the typing at
+  // all. Past this it is a static list that simply does not hold the answer,
+  // and waiting out the full deadline on every value is what once cost 15
+  // seconds across ten skills.
+  const STALE_GRACE_MS = 1200;
+
+  function optionKey(texts) {
+    return texts.join("|");
+  }
+
+  /**
+   * Click the option whose text best matches `want`, from an open listbox.
+   *
+   * A match is taken the moment it appears. A *miss*, though, is only believed
+   * once the menu has actually responded to what was typed — it must differ
+   * from what was on screen when this started, and then hold still for one
+   * more sample.
+   *
+   * Workday's prompts search server-side. The menu is already open holding the
+   * previous value's rows, or a "Loading" row, and the real results land a beat
+   * later. Deciding on the first non-empty render therefore answered from the
+   * stale list and returned false for every skill — while a person typing the
+   * same text watched the match appear and clicked it. That is the whole
+   * "manual search works, the extension does not" report.
+   */
   async function pickOpenOption(want, deadlineMs) {
     const target = norm(want);
     const deadline = Date.now() + (deadlineMs || 2500);
+    const started = Date.now();
+    let entryKey = null;
+    let previous = null;
+    let settled = null;
+
     while (Date.now() < deadline) {
-      const options = Array.from(document.querySelectorAll(OPTION_SELECTOR)).filter(
-        (o) => isVisible(o) && !o.closest(".iti__country-list")
-      );
+      const options = visibleOptions();
+      const texts = options.map((o) => norm(o.innerText || o.textContent));
+      const key = optionKey(texts);
+      if (entryKey === null) entryKey = key;
+
       if (options.length) {
-        const texts = options.map((o) => norm(o.innerText || o.textContent));
         let i = texts.findIndex((t) => t === target);
         if (i < 0) i = texts.findIndex((t) => t && (t.includes(target) || target.includes(t)));
         // "Yes"/"No" must not fuzzy-match into "Yes, I require sponsorship".
@@ -190,22 +238,30 @@
           options[i].click();
           return true;
         }
-        if (options.length === 1) {
-          options[0].click();
-          return true;
+        // Believe a miss only once these rows are this query's own answer.
+        const answered = key !== entryKey || Date.now() - started > STALE_GRACE_MS;
+        if (answered && key === previous) {
+          settled = options.length === 1 && !TRANSIENT_OPTION.test(texts[0]) ? options[0] : null;
+          break;
         }
-        return false;
       }
+      previous = key;
       await sleep(120);
+    }
+
+    // A tenant that renders exactly one row for the typed text has answered the
+    // question even when the wording differs. Only once the list settled:
+    // clicking a lone "Loading" row picks nothing and closes the menu.
+    if (settled && isVisible(settled)) {
+      settled.click();
+      return true;
     }
     return false;
   }
 
   /** Is any listbox rendered right now? Distinguishes "no match" from "no menu". */
   function anyOptionsVisible() {
-    return Array.from(document.querySelectorAll(OPTION_SELECTOR)).some(
-      (o) => isVisible(o) && !o.closest(".iti__country-list")
-    );
+    return visibleOptions().length > 0;
   }
 
   function closeListbox() {
@@ -326,7 +382,10 @@
       // Prefer the portal's own taxonomy entry when it offers one...
       let ok = false;
       if (hasListbox) {
-        ok = await pickOpenOption(value, picked === 0 ? 1500 : 800);
+        // A generous deadline costs nothing now: a miss is settled by the menu
+        // going quiet, not by running the clock out. What the deadline buys is
+        // room for a slow taxonomy search on the far side of a server.
+        ok = await pickOpenOption(value, 2500);
         if (!ok && !anyOptionsVisible()) hasListbox = false;
       }
 

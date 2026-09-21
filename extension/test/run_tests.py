@@ -511,6 +511,140 @@ async def run_enter_commit_and_sections() -> None:
         await browser.close()
 
 
+# A picker whose options come from a server, which is what Workday's Skills and
+# Degree prompts really are. The menu never goes blank between values: it holds
+# the PREVIOUS query's rows until the new ones arrive. Deciding on the first
+# non-empty render therefore reads a stale list and answers "no match" — the
+# failure that looks like "manually searching and clicking works, the extension
+# does not".
+ASYNC_PROMPT_HTML = """
+<!doctype html><meta charset="utf-8"><body>
+  <div data-automation-id="formField-skills">
+    <label id="sk-label">Skills</label>
+    <div data-automation-id="multiSelectContainer">
+      <span class="chips"></span>
+      <input id="sk" role="combobox" data-automation-id="searchBox" aria-labelledby="sk-label">
+    </div>
+  </div>
+  <div id="menu"></div>
+  <script>
+    var TAXONOMY = {
+      java: ['Java', 'JavaScript', 'Java EE'],
+      python: ['Python', 'Python 3'],
+      sql: ['SQL', 'SQL Server']
+    };
+    var inp = document.getElementById('sk');
+    var menu = document.getElementById('menu');
+    var timer = null;
+    window.__latency = 500;
+
+    function render(rows) {
+      menu.innerHTML = '';
+      rows.forEach(function (text) {
+        var row = document.createElement('div');
+        row.setAttribute('data-automation-id', 'promptOption');
+        row.textContent = text;
+        row.addEventListener('click', function () {
+          var chip = document.createElement('span');
+          chip.setAttribute('data-automation-id', 'selectedItem');
+          chip.textContent = text;
+          document.querySelector('.chips').appendChild(chip);
+          inp.value = '';
+          // The menu keeps the rows it was showing, exactly as Workday does.
+        });
+        menu.appendChild(row);
+      });
+    }
+
+    inp.addEventListener('input', function () {
+      var q = inp.value.trim().toLowerCase();
+      if (timer) clearTimeout(timer);
+      if (!q) return;
+      // Nothing changes on screen yet: the old rows stay put while the
+      // request is in flight.
+      timer = setTimeout(function () {
+        render(TAXONOMY[q] || ['No matching results']);
+      }, window.__latency);
+    });
+
+    // Enter commits nothing here: a taxonomy prompt only accepts its own rows.
+  </script>
+</body>
+"""
+
+
+async def run_async_prompt() -> None:
+    """
+    A server-backed picker must be given time to answer.
+
+    The menu holds the previous value's rows while the new ones are fetched, so
+    a picker that decides on the first non-empty render picks nothing from the
+    second value onwards.
+    """
+    from playwright.async_api import async_playwright
+
+    print("\nServer-backed prompt (stale rows before the real answer)")
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        page = await browser.new_page()
+        errors: list[str] = []
+        page.on("pageerror", lambda e: errors.append(str(e)))
+        await page.set_content(ASYNC_PROMPT_HTML)
+        await page.add_script_tag(path=str(EXT / "src" / "scrape.js"))
+        await page.add_script_tag(path=str(EXT / "src" / "fill.js"))
+
+        out = await page.evaluate(
+            """async () => {
+                 const started = Date.now();
+                 const { fields, elements } = window.__TA.scrape();
+                 const skill = fields.find(f => (f.label || '').toLowerCase().includes('skill'));
+                 const res = await window.__TA.applyFills(
+                   [{ idx: skill.idx, action: 'multiselect', value: 'Java',
+                      values: ['Java', 'Python', 'SQL'], label: 'Skills', confidence: 'low' }],
+                   elements, null);
+                 return {
+                   chips: Array.from(document.querySelectorAll('[data-automation-id="selectedItem"]'))
+                            .map(c => c.textContent),
+                   applied: res.applied.length,
+                   leftover: document.getElementById('sk').value,
+                   ms: Date.now() - started,
+                 };
+               }"""
+        )
+        # The second and third values are the ones that regress: the first is
+        # typed into an empty menu, so even the old code waited for it.
+        check("every skill committed", out["chips"], ["Java", "Python", "SQL"])
+        check("picker reported success", out["applied"], 1)
+        check("search box left clean", out["leftover"], "")
+        check("no page errors", errors, [])
+
+        # A value the taxonomy does not hold must not hang on the deadline, and
+        # must not click the "No matching results" row.
+        miss = await page.evaluate(
+            """async () => {
+                 document.querySelector('.chips').innerHTML = '';
+                 const started = Date.now();
+                 const { fields, elements } = window.__TA.scrape();
+                 const skill = fields.find(f => (f.label || '').toLowerCase().includes('skill'));
+                 const res = await window.__TA.applyFills(
+                   [{ idx: skill.idx, action: 'multiselect', value: 'Cobol',
+                      values: ['Cobol'], label: 'Skills', confidence: 'low' }],
+                   elements, null);
+                 return {
+                   chips: document.querySelectorAll('[data-automation-id="selectedItem"]').length,
+                   failed: res.failed.length,
+                   ms: Date.now() - started,
+                 };
+               }"""
+        )
+        check("unknown skill committed nothing", miss["chips"], 0)
+        check("unknown skill reported failure", miss["failed"], 1)
+        check("a miss does not run out the clock", miss["ms"] < 4000, True)
+
+        await browser.close()
+
+
 async def run_legal_questions() -> None:
     """
     Work authorization, sponsorship and the other yes/no legal questions.
@@ -647,6 +781,7 @@ async def main() -> None:
     await run_tenant_variations()
     await run_legal_questions()
     await run_enter_commit_and_sections()
+    await run_async_prompt()
     if "--integration" in sys.argv:
         await run_integration()
 
