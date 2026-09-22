@@ -112,9 +112,16 @@
   }
 
   // A committed entry in a multi-value picker, however the portal renders it.
+  //
+  // `selectedItemList` is the *container* Workday puts its chips in, and a
+  // loose `*="selectedItem"` matched it. The count was therefore 1 before a
+  // skill was added and 1 after, so `chipCount(el) > before` was never true
+  // and every committed value was reported as a failure — and then wiped,
+  // because the caller clears the box when it believes nothing landed.
   const CHIP_SELECTOR = [
     '[data-automation-id="selectedItem"]',
-    '[data-automation-id*="selectedItem"]',
+    '[data-automation-id^="selectedItem"]:not([data-automation-id$="List"])',
+    '[data-automation-id="selectedItemList"] > li',
     '[data-automation-id="pill"]',
     '[class*="multi-value"]',
     '[class*="chip"]',
@@ -125,10 +132,195 @@
   /** How many values this picker currently holds. */
   function chipCount(el) {
     try {
-      return widgetScope(el).querySelectorAll(CHIP_SELECTOR).length;
+      const nodes = Array.from(widgetScope(el).querySelectorAll(CHIP_SELECTOR));
+      // A node that holds other chips is the list, not an entry in it.
+      return nodes.filter((n) => !nodes.some((other) => other !== n && n.contains(other))).length;
     } catch (e) {
       return 0;
     }
+  }
+
+  // ── Workday prompt widgets ─────────────────────────────────────────────────
+  //
+  // Workday's searchable pickers (Skills, Degree, Field of Study, Source) are
+  // not "type into a box and click a row". Two facts make them work, both
+  // taken from job_app_filler by Berel Levy (BSD-3-Clause,
+  // github.com/berellevy/job_app_filler), which drives these widgets reliably:
+  //
+  //   1. The value is committed through React's own `onKeyDown` prop with a
+  //      Tab key and the answer as `target.value`. The widget is React
+  //      controlled, so a typed DOM value is state React never adopts.
+  //   2. The menu is not inside the field. It is a popup at body level, tied
+  //      back to its widget by `data-associated-widget`. Scanning the page for
+  //      options finds some other control's menu as readily as this one's.
+  //
+  // Which is why typing and waiting never worked here no matter how long it
+  // waited: nothing was listening to what was typed.
+
+  const WD_CONTAINER = '[data-automation-id="multiSelectContainer"]';
+  const WD_CHIP = '[data-automation-id="selectedItemList"] > li';
+  const WD_OPTION = '[data-automation-id="promptOption"], [data-automation-id="promptLeafNode"]';
+  const WD_POPUP = '[data-automation-widget="wd-popup"]';
+
+  /** React's props for a node, which is where the live handlers live. */
+  function reactProps(el) {
+    for (const key in el) {
+      if (key.startsWith("__reactProps")) return el[key];
+    }
+    return null;
+  }
+
+  async function waitFor(test, timeoutMs) {
+    const deadline = Date.now() + (timeoutMs || 800);
+    while (Date.now() < deadline) {
+      try {
+        if (test()) return true;
+      } catch (e) {
+        /* keep waiting */
+      }
+      await sleep(80);
+    }
+    return false;
+  }
+
+  /** The multi-select container that owns `el`, if this is a Workday prompt. */
+  function workdayContainer(el) {
+    if (!el || !el.closest) return null;
+    return el.closest(WD_CONTAINER) || el.querySelector?.(WD_CONTAINER) || null;
+  }
+
+  /**
+   * The popup holding this widget's options.
+   *
+   * Tied by `data-associated-widget`, so a second picker open elsewhere on the
+   * page cannot supply the rows this one gets clicked from.
+   */
+  function workdayPopup(container) {
+    const popups = Array.from(document.querySelectorAll(WD_POPUP)).filter(isVisible);
+    if (!popups.length) return { popup: null, owned: false };
+
+    const input = container && container.querySelector("input");
+    const ids = [
+      container && container.id,
+      input && input.id,
+      input && input.getAttribute("aria-controls"),
+      input && input.getAttribute("aria-owns"),
+      container && container.getAttribute("aria-controls"),
+    ].filter(Boolean);
+
+    for (const id of ids) {
+      let own = null;
+      try {
+        own = popups.find(
+          (p) =>
+            p.getAttribute("data-associated-widget") === id ||
+            p.id === id ||
+            p.querySelector(`[data-associated-widget="${CSS.escape(id)}"]`)
+        );
+      } catch (e) {
+        own = null;
+      }
+      if (own) return { popup: own, owned: true };
+    }
+
+    // Workday appends the newest popup last. Taking it is a guess, so the
+    // caller is told it is one — an unowned menu only gets clicked on a row
+    // whose text actually matches, never on "it was the only row".
+    return { popup: popups[popups.length - 1], owned: false };
+  }
+
+  /**
+   * The rows this prompt is offering, waiting for them to arrive.
+   *
+   * The search runs on the server. Looking once, immediately, found an empty
+   * menu and clicked nothing — the widget sat there showing results with
+   * nothing selected, which is exactly what a search that never selects looks
+   * like. If the popup cannot be tied to this widget, prompt rows anywhere
+   * are still better than none, and the caller makes up for the uncertainty
+   * by demanding a text match.
+   */
+  async function workdayRows(container, timeoutMs) {
+    const deadline = Date.now() + (timeoutMs || 3000);
+    let last = { rows: [], owned: false };
+    while (Date.now() < deadline) {
+      const { popup, owned } = workdayPopup(container);
+      const scope = popup || document;
+      const rows = Array.from(scope.querySelectorAll(WD_OPTION)).filter(isVisible);
+      if (rows.length) return { rows, owned: owned && !!popup };
+      last = { rows, owned };
+      await sleep(120);
+    }
+    return last;
+  }
+
+  function workdayChips(container) {
+    try {
+      return container.querySelectorAll(WD_CHIP).length;
+    } catch (e) {
+      return 0;
+    }
+  }
+
+  /**
+   * Feed values into a Workday prompt. Returns the number committed, or null
+   * when this is not a Workday prompt and the generic path should run.
+   */
+  async function fillWorkdayPrompt(el, values) {
+    const container = workdayContainer(el);
+    if (!container) return null;
+    const input = container.querySelector("input");
+    if (!input) return null;
+    const props = reactProps(input);
+    if (!props || typeof props.onKeyDown !== "function") return null;
+
+    let picked = 0;
+    for (const value of values) {
+      const before = workdayChips(container);
+      try {
+        input.focus({ preventScroll: true });
+        props.onKeyDown({
+          key: "Tab",
+          target: { value },
+          preventDefault() {},
+          stopPropagation() {},
+        });
+      } catch (e) {
+        continue;
+      }
+
+      // The Tab keydown runs the search. On most values it also commits, but
+      // where the taxonomy has more than one hit it just leaves the menu open
+      // — the row still has to be clicked.
+      let ok = await waitFor(() => workdayChips(container) > before, 700);
+
+      if (!ok) {
+        const { rows, owned } = await workdayRows(container, 3000);
+        const want = norm(value);
+        const row =
+          rows.find((r) => norm(r.innerText) === want) ||
+          rows.find((r) => norm(r.innerText).includes(want)) ||
+          (owned && rows.length === 1 ? rows[0] : null);
+        if (row) {
+          row.scrollIntoView({ block: "nearest" });
+          row.click();
+          ok = await waitFor(() => workdayChips(container) > before, 1200);
+          // Some tenants render the chip somewhere this does not count. The
+          // menu closing and the box emptying is the widget saying it took it.
+          if (!ok) {
+            ok = await waitFor(
+              () => !norm(input.value) && !workdayPopup(container).popup,
+              600
+            );
+          }
+        }
+      }
+      if (ok) picked += 1;
+      await sleep(150);
+    }
+
+    // The popup is dismissed rather than left hanging over the next field.
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    return picked;
   }
 
   function fillSelect(el, label) {
@@ -146,16 +338,67 @@
     return true;
   }
 
-  function fillCheckbox(el) {
+  const isChecked = (el) => !!el.checked || el.getAttribute("aria-checked") === "true";
+
+  /**
+   * Tick a checkbox.
+   *
+   * The state is read back after a wait, not on the line after the click.
+   * Workday's checkbox is React controlled and reports through `aria-checked`
+   * a tick later, so reading `el.checked` immediately said false, and the old
+   * fallback then forced `el.checked = true` by hand — which React owns and
+   * reverts, leaving the box visibly unticked while the run reported success.
+   */
+  async function fillCheckbox(el) {
     if (!isVisible(el) || el.disabled) return false;
-    if (el.checked) return true;
+    if (isChecked(el)) return true;
+    el.scrollIntoView({ block: "center" });
     el.click();
-    if (!el.checked) {
-      setNativeValue(el, el.value || "on");
-      el.checked = true;
-      el.dispatchEvent(new Event("change", { bubbles: true }));
+    if (await waitFor(() => isChecked(el), 600)) return true;
+
+    // Some tenants only bind the handler to the visible label.
+    const label = (el.labels && el.labels[0]) || el.closest("label");
+    if (label) {
+      label.click();
+      if (await waitFor(() => isChecked(el), 600)) return true;
     }
-    return el.checked;
+    return isChecked(el);
+  }
+
+  // Workday writes a date as two spinbuttons, aria-label "Month" and "Year"
+  // (plus "Day" where the day is asked for). The empty pair is what renders as
+  // "MM/YYYY".
+  const DATE_PART_LABEL = /^(month|day|year)$/i;
+
+  function isDatePart(el) {
+    if (!el || el.tagName !== "INPUT") return false;
+    if (DATE_PART_LABEL.test((el.getAttribute("aria-label") || "").trim())) return true;
+    const auto = el.getAttribute("data-automation-id") || "";
+    return /dateSection(Month|Day|Year)/i.test(auto) || el.getAttribute("role") === "spinbutton";
+  }
+
+  /**
+   * Write one part of a Workday date.
+   *
+   * Setting the value directly does not stick: the widget is a spinbutton and
+   * React re-renders from its own state. Setting it one short and pressing
+   * ArrowUp makes React do the increment itself, so the value it lands on is
+   * state it owns. This is the trick from job_app_filler (BSD-3-Clause).
+   */
+  function fillDatePart(el, value) {
+    const n = parseInt(String(value).trim(), 10);
+    if (!Number.isFinite(n)) return false;
+    try {
+      el.focus({ preventScroll: true });
+      setNativeValue(el, String(n - 1));
+      el.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ArrowUp", code: "ArrowUp", bubbles: true })
+      );
+      el.click();
+    } catch (e) {
+      return false;
+    }
+    return parseInt(el.value, 10) === n;
   }
 
   function fillRadio(el) {
@@ -327,6 +570,15 @@
     if (!isVisible(el)) return false;
     const candidates = (Array.isArray(value) ? value : [value]).filter(Boolean);
     if (!candidates.length) return false;
+
+    // A single-value Workday prompt — Degree, Field of Study, Source, phone
+    // country code — commits the same React way as the Skills picker.
+    for (const candidate of candidates) {
+      const viaReact = await fillWorkdayPrompt(el, [candidate]);
+      if (viaReact === null) break;         // not a Workday prompt
+      if (viaReact > 0) return true;
+    }
+
     if (!(await openWidget(el))) return false;
 
     for (const candidate of candidates) {
@@ -356,6 +608,10 @@
    * Each value is typed, matched and committed before the next one starts.
    */
   async function fillMultiselect(el, values) {
+    // Workday first: its prompts ignore typed text entirely.
+    const viaReact = await fillWorkdayPrompt(el, values);
+    if (viaReact !== null) return viaReact > 0;
+
     let picked = 0;
     // Some pickers have no listbox at all — they are tag inputs that commit on
     // Enter. Waiting 1.5s for a menu that will never render costs 15 seconds
@@ -468,7 +724,14 @@
       try {
         switch (fill.action) {
           case "text":
-            ok = fillText(el, fill.value);
+            // A Workday date part will not take a typed value, so the write is
+            // checked rather than assumed and redone through the spinbutton.
+            if (isDatePart(el)) {
+              ok = fillDatePart(el, fill.value);
+              if (!ok) ok = fillText(el, fill.value) && norm(el.value) === norm(fill.value);
+            } else {
+              ok = fillText(el, fill.value);
+            }
             break;
           case "select":
             ok = fillSelect(el, fill.value);
@@ -481,7 +744,7 @@
             ok = await fillMultiselect(el, fill.values && fill.values.length ? fill.values : [fill.value]);
             break;
           case "checkbox":
-            ok = fillCheckbox(el);
+            ok = await fillCheckbox(el);
             break;
           case "radio":
             ok = fillRadio(el);

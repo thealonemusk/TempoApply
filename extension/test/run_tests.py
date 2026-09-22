@@ -645,6 +645,186 @@ async def run_async_prompt() -> None:
         await browser.close()
 
 
+# Workday as it actually behaves, which no other fixture here models:
+#
+#   * the Skills picker is React controlled — typing into its input changes
+#     nothing, the value is only accepted through React's own onKeyDown prop;
+#   * its menu is a popup at body level, tied back by data-associated-widget,
+#     with a second widget's popup open at the same time to prove the tie is
+#     used;
+#   * a date is two spinbuttons that only commit on ArrowUp;
+#   * a checkbox reports through aria-checked, a tick after the click.
+#
+# Shapes and mechanisms from job_app_filler by Berel Levy (BSD-3-Clause).
+WORKDAY_REACT_HTML = """
+<!doctype html><meta charset="utf-8"><body>
+  <div data-automation-id="formField-skills">
+    <label id="sk-label">Skills</label>
+    <div id="skillsWidget" data-automation-id="multiSelectContainer"
+         role="combobox" aria-labelledby="sk-label">
+      <ul data-automation-id="selectedItemList"></ul>
+      <input id="sk">
+    </div>
+  </div>
+
+  <div data-automation-id="formField-startDate">
+    <label id="from-label">From</label>
+    <div data-automation-id="dateWidget" aria-labelledby="from-label">
+      <input aria-label="Month" data-automation-id="dateSectionMonth-input" data-committed="">
+      <input aria-label="Year" data-automation-id="dateSectionYear-input" data-committed="">
+    </div>
+  </div>
+
+  <div data-automation-id="formField-currentlyWorkHere">
+    <input id="cwh" type="checkbox" aria-checked="false">
+    <label for="cwh">I currently work here</label>
+  </div>
+
+  <script>
+    var TAXONOMY = { python: 'Python', sql: 'SQL' };
+    var AMBIGUOUS = { java: ['Java', 'JavaScript', 'Java EE'] };
+    var list = document.querySelector('[data-automation-id="selectedItemList"]');
+
+    function commit(text) {
+      var li = document.createElement('li');
+      li.textContent = text;
+      list.appendChild(li);
+      killPopups();
+    }
+    function killPopups() {
+      var old = document.querySelectorAll('[data-automation-widget="wd-popup"]');
+      for (var i = 0; i < old.length; i++) old[i].remove();
+    }
+    function openPopup(rows, owner) {
+      var pop = document.createElement('div');
+      pop.setAttribute('data-automation-widget', 'wd-popup');
+      pop.setAttribute('data-associated-widget', owner);
+      rows.forEach(function (text) {
+        var row = document.createElement('div');
+        row.setAttribute('data-automation-id', 'promptOption');
+        row.textContent = text;
+        row.addEventListener('click', function () { commit(text); });
+        pop.appendChild(row);
+      });
+      document.body.appendChild(pop);
+    }
+
+    // A decoy: another control's menu, open at the same time, offering a row
+    // with the same text. Picking from this one would be the page-wide scan.
+    openPopup(['Java'], 'someOtherWidget');
+    document.querySelector('[data-associated-widget="someOtherWidget"]')
+            .firstChild.addEventListener('click', function () {
+              window.__pickedWrongPopup = true;
+            });
+
+    // React's props, exactly where React puts them.
+    var input = document.getElementById('sk');
+    input['__reactProps$tempoapply'] = {
+      onKeyDown: function (e) {
+        if (!e || e.key !== 'Tab') return;
+        var v = ((e.target && e.target.value) || '').trim();
+        var k = v.toLowerCase();
+        if (TAXONOMY[k]) { commit(TAXONOMY[k]); return; }
+        if (AMBIGUOUS[k]) {
+          // The search runs on the server: the rows land well after the
+          // keystroke. This is the "it just searches and never selects" case.
+          setTimeout(function () { openPopup(AMBIGUOUS[k], 'skillsWidget'); }, 700);
+          return;
+        }
+        // Unknown: nothing commits and no menu opens.
+      }
+    };
+    // Typing does nothing at all, which is the point.
+    input.addEventListener('input', function () { window.__typedAt = Date.now(); });
+
+    // Spinbuttons: only ArrowUp moves committed state.
+    document.querySelectorAll('[data-automation-id^="dateSection"]').forEach(function (el) {
+      el.addEventListener('keydown', function (e) {
+        if (e.key !== 'ArrowUp') return;
+        var next = parseInt(el.value || '0', 10) + 1;
+        el.value = String(next);
+        el.setAttribute('data-committed', String(next));
+      });
+    });
+
+    // React-controlled checkbox: the click is owned, state lands a tick later.
+    var cb = document.getElementById('cwh');
+    cb.addEventListener('click', function (e) {
+      e.preventDefault();
+      setTimeout(function () {
+        cb.setAttribute('aria-checked', 'true');
+        cb.checked = true;
+      }, 250);
+    });
+  </script>
+</body>
+"""
+
+
+async def run_workday_react_widgets() -> None:
+    """
+    The real Workday widgets: React-controlled prompt, portal menu, spinbutton
+    dates, a checkbox that answers late.
+    """
+    from playwright.async_api import async_playwright
+
+    print("\nWorkday React widgets (prompt portal, spinbuttons, late checkbox)")
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        page = await browser.new_page()
+        errors: list[str] = []
+        page.on("pageerror", lambda e: errors.append(str(e)))
+        await page.set_content(WORKDAY_REACT_HTML)
+        await page.add_script_tag(path=str(EXT / "src" / "scrape.js"))
+        await page.add_script_tag(path=str(EXT / "src" / "fill.js"))
+
+        out = await page.evaluate(
+            """async () => {
+                 const { fields, elements } = window.__TA.scrape();
+                 const find = (needle) => fields.find(
+                   f => (f.label || '').toLowerCase().includes(needle));
+                 const skills = find('skill');
+                 const month = fields.find(f => /month/i.test(f.label || ''));
+                 const year = fields.find(f => /year/i.test(f.label || ''));
+                 const here = find('currently work');
+                 const res = await window.__TA.applyFills([
+                   { idx: skills.idx, action: 'multiselect', value: 'Java',
+                     values: ['Java', 'Python'], label: 'Skills' },
+                   { idx: month.idx, action: 'text', value: '01', label: 'From Month' },
+                   { idx: year.idx, action: 'text', value: '2025', label: 'From Year' },
+                   { idx: here.idx, action: 'checkbox', value: 'Yes',
+                     label: 'I currently work here' },
+                 ], elements, null);
+                 const cb = document.getElementById('cwh');
+                 const part = (sel) => document.querySelector(sel).getAttribute('data-committed');
+                 return {
+                   chips: Array.from(document.querySelectorAll(
+                            '[data-automation-id="selectedItemList"] > li')).map(li => li.textContent),
+                   wrongPopup: !!window.__pickedWrongPopup,
+                   month: part('[data-automation-id="dateSectionMonth-input"]'),
+                   year: part('[data-automation-id="dateSectionYear-input"]'),
+                   checked: cb.getAttribute('aria-checked'),
+                   applied: res.applied.length,
+                   failed: res.failed.map(f => f.label),
+                 };
+               }"""
+        )
+
+        # Java is ambiguous, so it has to come off this widget's own popup;
+        # Python commits straight through React.
+        check("both skills committed", out["chips"], ["Java", "Python"])
+        check("did not pick from another widget's menu", out["wrongPopup"], False)
+        check("month committed via spinbutton", out["month"], "1")
+        check("year committed via spinbutton", out["year"], "2025")
+        check("checkbox waited for aria-checked", out["checked"], "true")
+        check("everything applied", out["applied"], 4)
+        check("nothing failed", out["failed"], [])
+        check("no page errors", errors, [])
+
+        await browser.close()
+
+
 async def run_legal_questions() -> None:
     """
     Work authorization, sponsorship and the other yes/no legal questions.
@@ -782,6 +962,7 @@ async def main() -> None:
     await run_legal_questions()
     await run_enter_commit_and_sections()
     await run_async_prompt()
+    await run_workday_react_widgets()
     if "--integration" in sys.argv:
         await run_integration()
 
