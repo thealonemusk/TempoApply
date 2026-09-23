@@ -53,7 +53,9 @@ backend/resume/guard.py        fabrication gate
 backend/resume/match.py        keyword coverage, word-boundary matching
 backend/resume/compile.py      Tectonic wrapper + ATS audit
 extension/src/scrape.js        form scraping, repeating-section inference
-extension/src/fill.js          React-safe writes, listbox driving
+extension/src/fill.js          React-safe writes, listbox driving, Workday prompts
+extension/test/diagnose-workday.js  console probe: the page at rest
+extension/test/trace-skills.js      console probe: drives the Skills picker
 dashboard/app/(autopilot)/     separate route group — must not disturb the dashboard
 scripts/audit.py               repo health; run it before declaring anything done
 ```
@@ -88,6 +90,54 @@ scripts/audit.py               repo health; run it before declaring anything don
   `action="skip"`; the extension skips at `fill.js:257`. Intel's form has a
   `beecatcher` field that silently discards the application if filled.
 
+## Workday's widgets do not work the way they look
+
+Everything below was learned the hard way, from a real tenant that filled
+nothing while the fixtures stayed green. The mechanisms come from
+[job_app_filler](https://github.com/berellevy/job_app_filler) by Berel Levy
+(BSD-3-Clause), which drives these widgets reliably; the attribution is in the
+`fill.js` comments and must stay there. `harness-experience.html` was written
+from *assumed* Workday markup and passes regardless — it is not evidence.
+
+- **Its prompts are React controlled, so typing into them does nothing.**
+  Skills, Degree, Field of Study, Source, phone country code. React never
+  adopts a DOM value it did not set, so "type into the box, wait for the menu,
+  click the row" was writing text nothing was listening to. The value goes in
+  through React's own handler:
+  `getReactProps(input).onKeyDown({key: "Tab", target: {value}})`, reading
+  props off the `__reactProps$…` key on the input.
+- **The menu is not inside the field.** It is a popup at `body` level,
+  `[data-automation-widget="wd-popup"]`, tied back to its widget by
+  `data-associated-widget`. A page-wide scan for options finds some other
+  control's open menu just as readily, and clicks it.
+- **Tab searches; it only sometimes selects.** An unambiguous value commits
+  outright, an ambiguous one just leaves the menu open and still needs a click
+  on `[data-automation-id="promptOption"]`. That is the difference between
+  "it searched" and "it selected", and it is what the report *"it is just
+  searching skills not selecting them"* meant.
+- **Poll for the rows.** The search is a server round trip. Looking once,
+  immediately, finds an empty menu and clicks nothing. Never decide a picker
+  has no match from the first non-empty render either — the menu opens holding
+  the *previous* value's rows.
+- **Do not give up unless exactly one popup is open.** Workday keeps several
+  around. `popups.length === 1 ? popups[0] : null` returned null on a live
+  page essentially always. Fall back to the newest popup, but mark it unowned
+  and then only click a row whose text actually matches — never "it was the
+  only row".
+- **A date is two spinbuttons**, `aria-label="Month"` and `aria-label="Year"`
+  (plus `"Day"` where asked). The empty pair is what renders as `MM/YYYY`;
+  there is no single box to write. A written value does not stick, so set it
+  one short and press ArrowUp — React performs the increment itself and lands
+  on state it owns.
+- **The checkbox answers a tick late, through `aria-checked`.** Reading
+  `el.checked` on the next line says false. Never "fix" that by forcing
+  `el.checked = true`: React reverts it, so the box stays visibly unticked
+  while the run reports success. Click, then wait for the state.
+- **`CHIP_SELECTOR` must not match `selectedItemList`.** It is the container.
+  A loose `*="selectedItem"` matched it, so the count was 1 before a skill and
+  1 after, every committed value read as a failure — and then got wiped,
+  because the caller clears the box when it believes nothing landed.
+
 ## Verification
 
 All three are green as of the last sweep. Run them before claiming work is done.
@@ -95,9 +145,18 @@ All three are green as of the last sweep. Run them before claiming work is done.
 ```bash
 python scripts/audit.py                  # imports, deps, wiring, control chars, secrets
 python backend/resume/test_resume.py     # 73 checks
-python extension/test/run_tests.py       # 55 checks
+python extension/test/run_tests.py       # 110 checks
 python extension/test/run_tests.py --integration   # real Chrome
 ```
+
+A fixture the extension itself wrote is not evidence that a tenant works. Two
+of the suites here exist because the green ones were lying: `run_async_prompt`
+(a picker whose rows arrive from a server, with the previous value's rows still
+on screen) and `run_workday_react_widgets` (React props on the input, a
+body-level portal, a decoy popup belonging to another widget, spinbutton dates,
+a checkbox that answers late). When a fix is for a live-tenant bug, revert
+*just that behaviour* and watch the new check fail — a suite that passes both
+ways has not tested anything.
 
 `scripts/audit.py` checks the defect classes that have actually bitten this
 repo, not generic lint. It caught real dependency drift: `openai`, `PyMuPDF`
@@ -105,10 +164,23 @@ and `pylatexenc` were imported but undeclared, so a fresh clone could not run
 the tailorer.
 
 Operator CLIs: `scripts/workday_login.py`, `scripts/check_ai_key.py`,
-`scripts/verify_boards.py`. For an unfamiliar Workday tenant, paste
-`extension/test/diagnose-workday.js` into the DevTools console on the failing
-step — it is read-only and reports the real ids, Add buttons, and derived
-labels.
+`scripts/verify_boards.py`.
+
+Two console probes, for when a live tenant fills nothing and the fixtures are
+green. Both are pasted into DevTools on the failing step and copy their own
+output to the clipboard; neither submits anything.
+
+- `extension/test/diagnose-workday.js` — read-only, the page at rest. Reports
+  for every control the label and value the scraper would send, the entry it
+  would be tagged with, and the verdict the resolver would reach, including
+  `SKIP: already filled` — a field skipped there never opens a widget, which
+  is invisible from the page. Also the Add buttons and the entry containers.
+- `extension/test/trace-skills.js` — drives the Skills picker the way
+  `fill.js` does and names the step that fails. The decisive line is the
+  OPTION SCAN: it counts what `OPTION_SELECTOR` matches against what *looks*
+  like an option by any reading, so "the menu renders but the extension cannot
+  see it" is distinguished from "no menu" and from "clicked, but no chip
+  counted". It types one word into Skills and clears it again.
 
 ## Running it
 
@@ -127,22 +199,43 @@ After changing the extension: reload it at `chrome://extensions`, then
 hard-refresh any job tab already open — the old content script stays resident
 in those pages.
 
-## State as of 2026-09-18
+## State as of 2026-09-23
 
-Committed and pushed on `Working-V3` through `068e871`; working tree clean.
+On `Working-V3` through `e997cf3`; working tree clean. All three suites green.
 
 Working and verified against a live server: routing, the autofill resolver
 (legal questions, honeypots, employer 1 vs 2, websites, country), resume
 tailoring with compile/audit/trim, per-tenant Workday credentials, the isolated
 `/autopilot` route group, and extension UI restyled to the dashboard's tokens.
 
+The Workday widget work (`e997cf3`) is **verified against fixtures, not against
+his tenant.** The fixtures were rebuilt to match documented Workday behaviour
+rather than assumption, and each fix was isolated by reverting its own
+behaviour and watching the check fail — but nobody has yet seen it fill a real
+form. Do not describe it as working until he reports a run.
+
+The path through these four bugs, in case the next one looks similar: the
+backend resolved all four correctly the whole time (`sections_needed` was
+`{experience: 2, …}`, entry 2 answered `Denr Financial Services`, `From`
+answered `01/2025`), so every failure was browser-side. Checking that first
+took ten minutes and ruled out half the codebase.
+
 Known unfinished — none of these are started, and none should be started
 without asking:
 
+- **Employer 2 (`Denr`) still does not fill.** He ran whole-page Fill, so
+  `expandSections` ran and either did not find his tenant's Add button or the
+  click did not take inside its fixed 700ms wait. `addButtonFor` matches on
+  accessible name (`/^add( another)?$/`, then a word-bounded "add"); no
+  observation of the real button yet. The Add-buttons block of
+  `diagnose-workday.js` is what settles it.
+- A multiselect field is reported as applied if *any* value lands, so a
+  partial skills fill still shows green in the widget tally.
 - Google scraper returns 0 results (selectors are stale). Microsoft returns 3
   and is untested since the location-filter fix.
 - `_committed()` cannot read back the `#country` widget, so that field is
-  filled but unverified.
+  filled but unverified. It is a Workday prompt, so it now goes through the
+  React commit path too — worth re-checking when he next runs one.
 - No UI for Workday accounts on `/autopilot`; `scripts/workday_login.py` is the
   only way in.
 - Cover letters (`Application.cover_letter`) are still unwritten.
@@ -159,3 +252,10 @@ the dead apply path from `engine.py` before any test caught it. His words:
 *"write like a principal engineer who slaps himself for every broken flow"*.
 Validate the critical path rather than widening surface area, and do not report
 something as working until it has actually been run.
+
+When a live page misbehaves, get the observation before shipping the fix. Two
+rounds were spent here on plausible fixes for a widget nobody had looked at —
+each one real, neither one his bug — while the actual answer was in a
+maintained open-source extension that already drives Workday. Read the prior
+art, or get the console probe run, first. Blind patches to a form filler are
+worse than no patch: it fills a real employer's form and reports success.

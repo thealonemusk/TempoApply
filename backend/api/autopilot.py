@@ -27,6 +27,7 @@ from backend.applier.routing import Route
 from backend.autopilot.select import Tier, select
 from backend.config import settings
 from backend.db.models import Job, SessionLocal, get_db
+from backend.resume.tailor import tailored_pdf
 
 router = APIRouter(prefix="/api/autopilot", tags=["autopilot"])
 
@@ -234,8 +235,9 @@ def queue(db: Session = Depends(get_db)) -> Dict[str, Any]:
         shot = SHOT_DIR / f"{job.id}-filled.png"
         if not shot.is_file():
             shot = SHOT_DIR / f"{job.id}.png"
-        tailored = PROJECT_ROOT / "resumes" / "tailored"
-        pdf = next(tailored.glob(f"*_{job.id[:8]}/resume.pdf"), None) if tailored.is_dir() else None
+        # The same lookup the apply path uses, so "tailored" here means that
+        # PDF is what gets uploaded.
+        pdf = tailored_pdf(job.id)
         items.append({
             "job_id": job.id,
             "title": job.title,
@@ -264,12 +266,10 @@ def screenshot(job_id: str):
 @router.get("/resume/{job_id}")
 def tailored_resume(job_id: str):
     """The tailored PDF produced for this job."""
-    tailored = PROJECT_ROOT / "resumes" / "tailored"
-    if tailored.is_dir():
-        match = next(tailored.glob(f"*_{job_id[:8]}/resume.pdf"), None)
-        if match:
-            return FileResponse(match, media_type="application/pdf",
-                                filename=f"resume_{job_id[:8]}.pdf")
+    match = tailored_pdf(job_id)
+    if match:
+        return FileResponse(match, media_type="application/pdf",
+                            filename=f"resume_{job_id[:8]}.pdf")
     raise HTTPException(status_code=404, detail="No tailored resume for this job")
 
 

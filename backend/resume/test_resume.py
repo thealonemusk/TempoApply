@@ -286,6 +286,46 @@ def test_llm() -> None:
         failures.append(f"llm: {exc}")
 
 
+def test_tailored_lookup() -> None:
+    section("Tailored lookup — the PDF an application actually uploads")
+    import os
+    import tempfile
+    import time
+
+    from backend.resume import tailor
+
+    saved = tailor.TAILORED_DIR, tailor.master_path
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        master = root / "master.tex"
+        master.write_text("master", encoding="utf-8")
+        old = time.time() - 60
+        os.utime(master, (old, old))
+        tailor.TAILORED_DIR = root / "tailored"
+        tailor.master_path = lambda configured="": master
+        try:
+            check("no folder -> none", tailor.tailored_pdf("abcd1234-x"), None)
+            sub = tailor.output_dir("Acme Corp", "abcd1234-x")
+            sub.mkdir(parents=True)
+            (sub / "resume.pdf").write_bytes(b"%PDF tailored")
+
+            check("finds this job's PDF", tailor.tailored_pdf("abcd1234-x"), sub / "resume.pdf")
+            check("another job gets none", tailor.tailored_pdf("ffff0000-y"), None)
+
+            named = tailor.tailored_upload("abcd1234-x", "Ashutosh_Jha.pdf")
+            check("upload carries the default's name", named.name if named else "", "Ashutosh_Jha.pdf")
+            check("named copy stays in its sub-folder", named.parent if named else None, sub)
+            check("named copy is the tailored bytes", named.read_bytes() if named else b"", b"%PDF tailored")
+            docx = tailor.tailored_upload("abcd1234-x", "Ashutosh_Jha.docx")
+            check("a .docx default still uploads a .pdf", docx.name if docx else "", "Ashutosh_Jha.pdf")
+
+            now = time.time()
+            os.utime(master, (now, now))
+            check("older than the master -> ignored", tailor.tailored_pdf("abcd1234-x"), None)
+        finally:
+            tailor.TAILORED_DIR, tailor.master_path = saved
+
+
 def main() -> None:
     doc = test_parser()
     test_template_style()
@@ -296,6 +336,7 @@ def main() -> None:
     test_guard()
     test_compile()
     test_one_page_fitter()
+    test_tailored_lookup()
     if "--llm" in sys.argv:
         test_llm()
 

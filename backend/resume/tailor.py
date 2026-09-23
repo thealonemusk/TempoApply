@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
@@ -143,6 +144,46 @@ def _slug(text: str) -> str:
 
 def output_dir(company: str, job_id: str) -> Path:
     return TAILORED_DIR / f"{_slug(company)}_{(job_id or 'adhoc')[:8]}"
+
+
+def tailored_pdf(job_id: str) -> Optional[Path]:
+    """
+    The tailored PDF produced for this job, or None.
+
+    A PDF older than the master .tex is ignored: it was built from a resume
+    that has since been edited, and would send an employer the old version.
+    """
+    if not job_id or not TAILORED_DIR.is_dir():
+        return None
+    pdf = next(TAILORED_DIR.glob(f"*_{job_id[:8]}/resume.pdf"), None)
+    if pdf is None:
+        return None
+    master = master_path()
+    if master.is_file() and pdf.stat().st_mtime < master.stat().st_mtime:
+        logger.info(f"Ignoring stale tailored resume {pdf} — the master .tex is newer")
+        return None
+    return pdf
+
+
+def tailored_upload(job_id: str, filename: str = "") -> Optional[Path]:
+    """
+    The tailored PDF under the name an employer should see.
+
+    Every tailored file is called `resume.pdf`, and an upload carries its file
+    name, so a copy is kept beside it under the default resume's name. It stays
+    inside `resumes/tailored/<sub>/` — a PDF directly in `resumes/` would be
+    picked up by `ApplicantProfile.resume_file()` as the default for every job.
+    """
+    pdf = tailored_pdf(job_id)
+    if pdf is None:
+        return None
+    name = Path(filename).stem + ".pdf" if filename else pdf.name
+    if name == pdf.name:
+        return pdf
+    named = pdf.parent / name
+    if not named.is_file() or named.stat().st_mtime < pdf.stat().st_mtime:
+        shutil.copyfile(pdf, named)
+    return named
 
 
 def _bullet_block(slots: Sequence, ranks: Dict[str, float]) -> str:

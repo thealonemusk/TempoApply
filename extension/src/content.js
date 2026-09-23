@@ -123,10 +123,13 @@
     state.lastResolve = data;
 
     let resumeFile = null;
+    let resumeTailored = false;
     if (data.fills.some((f) => f.action === "file")) {
-      const resume = await send({ type: "resume" });
+      // The URL picks this job's tailored PDF when one exists.
+      const resume = await send({ type: "resume", url: location.href });
       if (resume.ok) {
         resumeFile = TA.base64ToFile(resume.data.b64, resume.data.filename, resume.data.mime);
+        resumeTailored = !!resume.data.tailored;
       }
     }
 
@@ -148,6 +151,7 @@
       has_resume: data.has_resume,
       needed_resume: data.fills.some((f) => f.action === "file"),
       got_resume: !!resumeFile,
+      resume_tailored: resumeTailored,
     };
   }
 
@@ -157,7 +161,7 @@
     return {
       scraped: 0, filled: 0, low: 0, failed: 0, frames: 0,
       unresolved: [], job_title: "", company: "", ats: "",
-      known_job: false, missingResume: false, error: "", stage: null, contextLost: false,
+      known_job: false, missingResume: false, resume: "", error: "", stage: null, contextLost: false,
       failedLabels: [],
     };
   }
@@ -175,6 +179,7 @@
     if (!totals.ats && r.ats && r.ats !== "unknown") totals.ats = r.ats;
     if (r.known_job) totals.known_job = true;
     if (r.needed_resume && !r.got_resume) totals.missingResume = true;
+    if (r.got_resume) totals.resume = r.resume_tailored ? "tailored" : totals.resume || "default";
     if (r.error && !totals.error) totals.error = r.error;
     if (r.contextLost) totals.contextLost = true;
     // A gate in any frame is what the user has to act on first.
@@ -230,6 +235,8 @@
     const notes = [];
     if (totals.scraped === 0) notes.push("No form fields found on this page.");
     if (totals.missingResume) notes.push("No resume on file — attach it by hand.");
+    if (totals.resume === "tailored") notes.push("Attached the resume tailored for this job.");
+    if (totals.resume === "default") notes.push("Attached your default resume — none tailored for this job.");
     if (totals.failed) {
       // Naming the field is the difference between "something broke" and
       // "click this one yourself" — they are outlined red on the page too.

@@ -430,11 +430,40 @@ def resolve(req: ResolveRequest, db: Session = Depends(get_db)):
     )
 
 
+_APPLY_SUFFIX_RE = re.compile(r"/apply(?:/.*)?$", re.I)
+
+
+def _job_for_page(db: Session, urls: List[str]) -> Optional[Job]:
+    """
+    The job a form page belongs to. Workday and Lever put the form at the
+    posting URL plus `/apply…`, so that suffix is tried off as well. Nothing
+    looser than that: a wrong match would attach another job's resume.
+    """
+    for url in urls:
+        if not url:
+            continue
+        bare = url.split("#")[0].split("?")[0].rstrip("/")
+        for candidate in (url, _APPLY_SUFFIX_RE.sub("", bare)):
+            job = _lookup_job(db, candidate)
+            if job:
+                return job
+    return None
+
+
 @router.get("/resume")
-def resume():
-    """Resume bytes for the extension to drop into a file input."""
+def resume(url: str = "", tab_url: str = "", db: Session = Depends(get_db)):
+    """
+    Resume bytes for the extension to drop into a file input — the tailored PDF
+    for the job on this page when one exists, otherwise the default resume.
+    """
+    from backend.resume.tailor import tailored_upload
+
     profile = load_profile()
-    path = profile.resume_file()
+    default = profile.resume_file()
+    job = _job_for_page(db, [url, tab_url])
+    path = tailored_upload(job.id, default.name if default else "") if job else None
+    tailored = path is not None
+    path = path or default
     if not path:
         raise HTTPException(status_code=404, detail="No resume on file — upload one in Settings")
     mime = mimetypes.guess_type(path.name)[0] or "application/pdf"
@@ -442,6 +471,8 @@ def resume():
         "filename": path.name,
         "mime": mime,
         "b64": base64.b64encode(path.read_bytes()).decode("ascii"),
+        "tailored": tailored,
+        "job_id": job.id if job else "",
     }
 
 
