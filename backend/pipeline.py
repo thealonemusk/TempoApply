@@ -3,9 +3,12 @@ Job Pipeline Orchestrator — multi-platform job discovery and experience valida
 """
 import asyncio
 import json
+import re
+import urllib.parse
 from datetime import datetime, timedelta
 
 from loguru import logger
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from backend.applier.ats import detect_ats
@@ -24,6 +27,38 @@ from backend.scan_control import clear_stop, should_stop
 from backend import seen_ledger
 
 
+_WS_RE = re.compile(r"\s+")
+
+
+def _dup_key(title: str, company: str, location: str) -> str:
+    """Title + company + location, for spotting one posting under two URLs."""
+    parts = [_WS_RE.sub(" ", (v or "").strip().lower()) for v in (title, company, location)]
+    if not parts[0] or not parts[1]:
+        return ""
+    return "|".join(parts)
+
+
+def _host(url: str) -> str:
+    try:
+        host = urllib.parse.urlsplit(url or "").netloc.lower()
+    except ValueError:
+        return ""
+    return host[4:] if host.startswith("www.") else host
+
+
+def _is_cross_post(seen_hosts, host: str) -> bool:
+    """Is this the same posting already taken from a *different* site?
+
+    Dedup is by URL first. Title + company used to be a second key, and it
+    dropped distinct requisitions: Amazon lists dozens of "Software
+    Development Engineer" roles, one per team and city, and all but the first
+    vanished. Now location is part of the key, and two URLs on the same host
+    are two requisitions (that host's own job ids differ) — only a match from
+    another host, e.g. LinkedIn mirroring a careers page, is a duplicate.
+    """
+    return bool(seen_hosts) and any(h != host for h in seen_hosts)
+
+
 def upsert_jobs(jobs: list, db: Session) -> int:
     """Insert new jobs, skipping anything the seen ledger says we already handled.
 
@@ -34,7 +69,8 @@ def upsert_jobs(jobs: list, db: Session) -> int:
     # One query for the whole batch instead of a SELECT per candidate.
     blocked_urls, _ = seen_ledger.load_blocklist(db)
     batch_urls = set()
-    batch_tcs = set()
+    # dup key -> hosts it was accepted from (see `_is_cross_post`).
+    batch_dups: dict = {}
 
     max_exp_years = getattr(settings, "experience_years", 2)
     min_score = getattr(settings, "min_relevance_score", 55)
@@ -50,9 +86,10 @@ def upsert_jobs(jobs: list, db: Session) -> int:
             continue
 
         ukey = seen_ledger.url_key(url)
-        tkey = seen_ledger.tc_key(title, company)
+        dkey = _dup_key(title, company, job_data.get("location", ""))
+        host = _host(url)
 
-        if ukey in batch_urls or (tkey and tkey in batch_tcs):
+        if ukey in batch_urls or _is_cross_post(batch_dups.get(dkey), host):
             continue
 
         # The ledger remembers decisions the user already made, even for jobs
@@ -100,18 +137,27 @@ def upsert_jobs(jobs: list, db: Session) -> int:
         # Added only once a job passes, so a richer duplicate later in the
         # batch can still win over a thin one seen first.
         batch_urls.add(ukey)
-        if tkey:
-            batch_tcs.add(tkey)
+        if dkey:
+            batch_dups.setdefault(dkey, set()).add(host)
 
         existing_url = db.query(Job).filter(Job.url == url).first()
         if existing_url:
             continue
 
-        existing_tc = db.query(Job).filter(
-            Job.title.ilike(title), Job.company.ilike(company)
-        ).first()
-        if existing_tc:
-            continue
+        # Equality on lower(), not ilike: ilike read "_" and "%" in a title
+        # as wildcards. Candidates are then narrowed in Python on location and
+        # host, the same rule as within the batch.
+        if dkey:
+            same_name = db.query(Job.url, Job.title, Job.company, Job.location).filter(
+                func.lower(Job.title) == (title or "").strip().lower(),
+                func.lower(Job.company) == (company or "").strip().lower(),
+            ).all()
+            hosts = {
+                _host(r_url) for r_url, r_title, r_company, r_loc in same_name
+                if _dup_key(r_title, r_company, r_loc) == dkey
+            }
+            if _is_cross_post(hosts, host):
+                continue
 
         missing_skills = json.dumps(job_data.get("missing_skills", []))
         job = Job(
@@ -149,7 +195,7 @@ def purge_visited_jobs(db: Session) -> int:
     ).all()
     # Mark before deleting: after db.delete the row's URL is no longer readable,
     # and an unrecorded purge is exactly how these jobs came back.
-    seen_ledger.mark_jobs(db, visited, "visited", "opened by user")
+    seen_ledger.mark_removed_jobs(db, visited, "visited", "opened by user")
     removed = 0
     for job in visited:
         if job.application:
@@ -168,7 +214,8 @@ def purge_stale_discovered_jobs(db: Session, max_age_hours: int = JOB_FRESHNESS_
         Job.status.in_(["discovered", "scored"]),
         Job.discovered_at < cutoff,
     ).all()
-    seen_ledger.mark_jobs(
+    # A stale row the user opened stays "visited": expiry is not a decision.
+    seen_ledger.mark_removed_jobs(
         db, stale, "expired", f"aged out of the queue after {max_age_hours}h"
     )
     removed = 0

@@ -41,6 +41,7 @@ TAILORED_DIR = RESUMES_DIR / "tailored"
 DEFAULT_MASTER = RESUMES_DIR / "master_resume.tex"
 
 MAX_TRIM_ROUNDS = 12
+_JOB_ID_RE = re.compile(r"^[0-9A-Za-z-]{8,64}$")
 
 SYSTEM = (
     "You are a resume editor. You rewrite a candidate's existing bullet points so they "
@@ -156,7 +157,8 @@ def tailored_pdf(job_id: str) -> Optional[Path]:
     A PDF older than the master .tex is ignored: it was built from a resume
     that has since been edited, and would send an employer the old version.
     """
-    if not job_id or not TAILORED_DIR.is_dir():
+    # The id goes into a glob: "*" would match every job's folder.
+    if not job_id or not _JOB_ID_RE.match(job_id) or not TAILORED_DIR.is_dir():
         return None
     pdf = next(TAILORED_DIR.glob(f"*_{job_id[:8]}/resume.pdf"), None)
     if pdf is None:
@@ -183,8 +185,12 @@ def tailored_upload(job_id: str, filename: str = "") -> Optional[Path]:
     name = Path(filename).stem + ".pdf" if filename else pdf.name
     if name == pdf.name:
         return pdf
-    named = pdf.parent / name
+    # A subfolder of its own: beside resume.pdf sit base.pdf (the untailored
+    # master) and the trim loop's staging file, and a default resume named
+    # either would have been "found" there and uploaded as the tailored one.
+    named = pdf.parent / "upload" / name
     try:
+        named.parent.mkdir(exist_ok=True)
         if not named.is_file() or named.stat().st_mtime < pdf.stat().st_mtime:
             shutil.copyfile(pdf, named)
     except OSError as exc:
@@ -344,6 +350,8 @@ def _propose_rewrites(
         return {}, f"rewrite unavailable ({exc})"
 
     raw = data.get("rewrites") or {}
+    if not isinstance(raw, dict):        # a list here used to crash the job's tailoring
+        return {}, f"rewrite reply was malformed ({type(raw).__name__}, expected an object)"
     valid_ids = {s.id for s in editable}
     rewrites = {
         str(k): " ".join(str(v).split())
@@ -455,8 +463,19 @@ def tailor(
     master_plain = texdoc.plain_text(doc)
     # The headline options live in a comment, which plain_text() strips; they
     # are the author's own statements, so they count as master content.
-    gate = guard_mod.Guard(" ".join([master_plain, *doc.headlines]))
-    accepted, rejected = gate.filter(rewrites)
+    gate = guard_mod.Guard(
+        " ".join([master_plain, *doc.headlines]),
+        jd_text=jd_text,
+        master_figures_text="\n".join([texdoc.prose_text(doc), *doc.headlines]),
+    )
+    # Each bullet is checked against itself (figures) and its own entry (names,
+    # technologies); the summary against the whole resume.
+    scopes = {
+        s.id: (s.text, texdoc.entry_context(doc, s))
+        for s in doc.editable_slots
+        if s.kind == "bullet"
+    }
+    accepted, rejected = gate.filter(rewrites, scopes)
     if rejected:
         for item in rejected:
             logger.info(f"Guard rejected {item['slot']}: {item['reason']}")
@@ -510,6 +529,14 @@ def tailor(
         except (rc.CompileError, ValueError) as exc2:
             staging.unlink(missing_ok=True)
             return TailorResult(ok=False, error=f"LaTeX failed: {exc2}")
+    # Out of bullets to trim and still too long: a two-page resume is not a
+    # tailored version of a one-page one. Fail, and the default goes out.
+    if audit.pages > max_pages:
+        staging.unlink(missing_ok=True)
+        return TailorResult(
+            ok=False,
+            error=f"Tailored resume runs to {audit.pages} pages (limit {max_pages}); using the default",
+        )
     try:
         staging.replace(pdf_path)
     except OSError as exc:  # Windows refuses while a viewer holds the old PDF

@@ -14,9 +14,12 @@ from backend.applier.filler import (
     apply_result,
     click_apply,
     click_next,
+    control_text,
     dismiss_overlays,
     fill_form,
     finish_application,
+    is_submit_control,
+    reads_as_submit,
     screenshot_failure,
     unfilled_required,
     upload_resume,
@@ -179,7 +182,12 @@ async def apply_lever(
                     info["filled"] = info.get("filled", 0) + 1
         except Exception:
             continue
-    boxes = page.locator('input[type="checkbox"][required], input[name*="consent"]')
+    # Only required boxes, and never one that opts him into marketing. This
+    # used to tick every `name*="consent"` box too, which on Lever includes the
+    # optional "contact me about future opportunities" opt-in — answering Yes
+    # where fields.py answers marketing questions No. A *required* box that
+    # reads as marketing is left for him rather than guessed.
+    boxes = page.locator('input[type="checkbox"][required], input[type="checkbox"][aria-required="true"]')
     try:
         box_count = await boxes.count()
     except Exception:
@@ -187,8 +195,25 @@ async def apply_lever(
     for i in range(box_count):
         box = boxes.nth(i)
         try:
-            if not await box.is_checked():
-                await box.check()
+            if await box.is_checked():
+                continue
+            text = await box.evaluate(
+                """el => {
+                     const parts = [el.name || '', el.getAttribute('aria-label') || ''];
+                     for (const lab of (el.labels || [])) parts.push(lab.innerText || '');
+                     const wrap = el.closest('label, li, .application-question, fieldset');
+                     if (wrap) parts.push((wrap.innerText || '').slice(0, 400));
+                     return parts.join(' ').toLowerCase();
+                   }"""
+            )
+            if any(x in (text or "") for x in (
+                "marketing", "newsletter", "talent community", "talent network", "talent pool",
+                "future opportunit", "other opportunit", "similar roles", "similar positions",
+                "keep me updated", "keep me informed", "job alert", "promotional",
+            )):
+                logger.info(f"Lever: left a marketing-style checkbox for review: {(text or '')[:80]!r}")
+                continue
+            await box.check()
         except Exception:
             continue
     return await _finish(page, page, profile, auto_submit, job_id, info)
@@ -231,8 +256,11 @@ async def follow_external_apply(page: Page) -> tuple[Page, str]:
         try:
             if not await loc.count() or not await loc.first.is_visible():
                 continue
-            text = ((await loc.first.inner_text()) or "").lower()
+            text = await control_text(loc.first)
             if "easy apply" in text:
+                continue
+            # `has-text("Apply")` also finds "Submit Application".
+            if reads_as_submit(text) or await is_submit_control(loc.first):
                 continue
             href = await loc.first.get_attribute("href")
             existing = list(page.context.pages)

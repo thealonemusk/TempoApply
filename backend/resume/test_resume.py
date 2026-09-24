@@ -202,6 +202,90 @@ def test_guard() -> None:
     check("filter reports the bad one", len(rejected), 1)
 
 
+GUARD_TEX = r"""\documentclass{article}
+\newcommand{\entry}[2]{\begin{tabular*}{0.97\textwidth}{l}\textbf{#1} #2\end{tabular*}}
+\begin{document}
+Ashutosh Jha | +91 9939964663 | Noida, India
+\section{Summary}
+\small
+Backend / distributed-systems engineer with production ownership of payments infrastructure.
+\section{Experience}
+\resumeSubheading{Paytm}{2025}
+\begin{itemize}
+  \resumeItem{Owned CI/CD and OTA release path for 18 device types, including Jenkins builds.}
+
+  \resumeItem{Enabled 45 production changes through automated PR workflows.}
+\end{itemize}
+\resumeSubheading{Denr Financial Services}{2024}
+\begin{itemize}
+  \resumeItem{Improved API response times by 40\% through asynchronous processing and caching.}
+
+  \resumeItem{Built backend services using AWS Lambda and S3.}
+\end{itemize}
+\section{Projects}
+\resumeProjectHeading{ThrottleX}{Java 17, Spring Boot, MySQL, Docker}
+\begin{itemize}
+  \resumeItem{Built a rate-limiting service with Token Bucket and Sliding Window algorithms.}
+
+  \resumeItem{Exposed a 9-endpoint admin API for policy management.}
+\end{itemize}
+\end{document}
+"""
+
+
+def test_guard_scoping() -> None:
+    """
+    The rewrites the first guard let through on the real master. Figures are
+    checked against their own bullet as value + unit, names and technologies
+    against their own entry, and number words and job-description terms at all.
+    """
+    section("Guard scoping — each claim against the narrowest source that can support it")
+    doc = texdoc.parse(GUARD_TEX)
+    jd = "We use Apache Flink, BigQuery and Kafka. Our platform team ships fast."
+    gate = guard_mod.Guard(texdoc.plain_text(doc), jd_text=jd,
+                           master_figures_text=texdoc.prose_text(doc))
+
+    def slot(prefix):
+        return next(s for s in doc.slots if s.text.startswith(prefix))
+
+    def verdict(s, text):
+        return gate.check(text, source=s.text, context=texdoc.entry_context(doc, s)).ok
+
+    cicd, prs = slot("Owned CI/CD"), slot("Enabled 45")
+    api, rate = slot("Improved API"), slot("Built a rate-limiting")
+    refused = [
+        (api, "Improved API response times by 64% through caching.", "digits from the phone number"),
+        (api, "Improved API response times by 97% through caching.", "digits from 0.97\\textwidth"),
+        (cicd, "Owned CI/CD and OTA release path for 8 device types.", "18 -> 8"),
+        (cicd, "Owned CI/CD and OTA release path for 45 device types.", "45 from another bullet"),
+        (prs, "Enabled 45M production changes through automated PR workflows.", "45 -> 45M"),
+        (cicd, "Owned CI/CD and OTA releases at Denr Financial Services.", "another employer"),
+        (cicd, "Owned stream processing with flink and bigquery.", "lowercase JD tech"),
+        (prs, "Led a team of five engineers serving millions of users.", "number words"),
+        (cicd, "Stripe integrations shipped across 18 device types.", "sentence-initial name"),
+        (rate, "Built services in javascript behind a limiter.", "javascript for java"),
+        (api, "Improved API response times by 40% using Spring Boot.", "tech from another entry"),
+    ]
+    allowed = [
+        (api, "Cut API response times by 40% using asynchronous processing and caching."),
+        (cicd, "Ran CI/CD and OTA releases for 18 device types with Jenkins builds."),
+        (rate, "Built a rate-limiting service in Spring Boot, packaged with Docker."),
+        (rate, "Built a Token Bucket and Sliding Window rate-limiting service in Java."),
+        (cicd, "Owned CI/CD for 18 device types, applying distributed systems practice."),
+    ]
+    for s, text, why in refused:
+        check(f"refuses {why}", verdict(s, text), False)
+    for s, text in allowed:
+        check(f"accepts: {text[:34]}", verdict(s, text), True)
+
+    # The summary summarises the whole resume, so it may cite any bullet's
+    # figures — but still none that no bullet states.
+    check("summary may cite 45 and 18",
+          gate.check("Backend engineer who shipped 45 production changes for 18 device types.").ok, True)
+    check("summary may not invent 64%", gate.check("Backend engineer who cut latency 64%.").ok, False)
+    check("figures compare as value + unit", guard_mod.figures("1,500 LOC") == guard_mod.figures("1.5k LOC"), True)
+
+
 # ── Compilation ──────────────────────────────────────────────────────────────
 
 def test_compile() -> None:
@@ -314,7 +398,15 @@ def test_tailored_lookup() -> None:
 
             named = tailor.tailored_upload("abcd1234-x", "Ashutosh_Jha.pdf")
             check("upload carries the default's name", named.name if named else "", "Ashutosh_Jha.pdf")
-            check("named copy stays in its sub-folder", named.parent if named else None, sub)
+            check("named copy stays in its sub-folder", named.parent if named else None, sub / "upload")
+            (sub / "base.pdf").write_bytes(b"%PDF untailored master")
+            base = tailor.tailored_upload("abcd1234-x", "base.pdf")
+            check("a default named base.pdf still gets the tailored bytes",
+                  base.read_bytes() if base else b"", b"%PDF tailored")
+            from backend.resume import sends
+            (sub / "report.json").write_text('{"llm_used": true, "model_rewrites": 3}', encoding="utf-8")
+            check("send log finds the report beside an upload/ copy",
+                  sends._report_for(named).get("model_rewrites"), 3)
             check("named copy is the tailored bytes", named.read_bytes() if named else b"", b"%PDF tailored")
             docx = tailor.tailored_upload("abcd1234-x", "Ashutosh_Jha.docx")
             check("a .docx default still uploads a .pdf", docx.name if docx else "", "Ashutosh_Jha.pdf")
@@ -545,6 +637,13 @@ def test_tailor_end_to_end() -> None:
             finally:
                 tailor.rc.compile_tex = real_compile
             late_dir = tailor.output_dir("Late", "e2e00003-z")
+
+            # Out of bullets to trim and still over the limit: not a success.
+            long = tailor.tailor("Java", company="Long", job_id="e2e00004-w",
+                                 master=str(SAMPLE), max_pages=0)
+            check("over-length tailored resume fails", long.ok, False)
+            check("...and leaves no resume.pdf to upload",
+                  (tailor.output_dir("Long", "e2e00004-w") / "resume.pdf").exists(), False)
             check("late failure reported", late.ok, False)
             check("round one's PDF not left as resume.pdf", (late_dir / "resume.pdf").exists(), False)
         finally:
@@ -628,6 +727,23 @@ def test_llm_resilience() -> None:
         script.update(primary=[Err(401)], backup=['{"ok": 2}'])
         check("bad key is not retried on that model", llm.ask_json("s", "u"), {"ok": 2})
         check("one call on the refused model", calls.count("primary"), 1)
+
+        # A JSON array parses fine and then crashes every caller's data.get().
+        llm._down_until.clear()
+        calls.clear()
+        script.update(primary=['["not", "an", "object"]'] * 3, backup=['{"ok": 3}'])
+        check("a non-object reply is not returned", llm.ask_json("s", "u"), {"ok": 3})
+
+        # A timeout carries no status_code; it used to be retried per job.
+        class APITimeoutError(Exception):
+            pass
+
+        llm._down_until.clear()
+        calls.clear()
+        script.update(primary=[APITimeoutError("timed out")], backup=['{"ok": 4}'])
+        check("a timeout fails over at once", llm.ask_json("s", "u"), {"ok": 4})
+        check("...after one attempt, not three", calls.count("primary"), 1)
+        check("...and the model cools down", llm._down_until.get("primary", 0) > 0, True)
     finally:
         (llm._client, llm.model_name, llm.fallback_model, llm.time.sleep) = saved[:4]
         llm._down_until.clear()
@@ -642,6 +758,7 @@ def main() -> None:
     test_drop_and_edit(doc)
     test_matching()
     test_guard()
+    test_guard_scoping()
     test_compile()
     test_one_page_fitter()
     test_tailored_lookup()

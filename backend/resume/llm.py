@@ -45,7 +45,12 @@ OVERLOAD_BACKOFF_S = (5, 15)           # 503 "high demand"; no wait is given
 # every job in a batch re-learns the outage: ~2 minutes of retries each, over an
 # hour of dead waiting for 30 jobs.
 COOLDOWN_S = 300
+REQUEST_TIMEOUT_S = 60
 _down_until: Dict[str, float] = {}
+
+
+class _Truncated(ValueError):
+    """The reply hit the token limit: retrying the same prompt truncates again."""
 
 
 class LLMUnavailable(RuntimeError):
@@ -111,7 +116,10 @@ def _client():
         raise LLMUnavailable("The openai package is not installed — pip install openai") from exc
 
     url = base_url()
-    return OpenAI(api_key=key, base_url=url, max_retries=0) if url else OpenAI(api_key=key, max_retries=0)
+    # The SDK's default timeout is 600s. With 3 attempts per model, 2 models
+    # and 2 calls per job, one unresponsive endpoint cost hours of a batch.
+    opts = {"api_key": key, "max_retries": 0, "timeout": REQUEST_TIMEOUT_S}
+    return OpenAI(base_url=url, **opts) if url else OpenAI(**opts)
 
 
 DAILY_COOLDOWN_S = 3600
@@ -142,7 +150,22 @@ def _wait_for(exc: Exception, attempt: int) -> Optional[float]:
         return OVERLOAD_BACKOFF_S[min(attempt, len(OVERLOAD_BACKOFF_S) - 1)]
     if status in (400, 401, 403, 404):
         return None                      # a bad request or key does not heal
-    return 2.0                           # transport error, malformed JSON
+    if isinstance(exc, _Truncated):
+        return None                      # the same prompt truncates the same way
+    if _is_outage(exc):
+        return None                      # a timeout already cost a full minute
+    return 2.0                           # malformed JSON, a dropped reply
+
+
+def _is_outage(exc: Exception) -> bool:
+    """
+    The provider, not the request, is at fault — sit this model out. A timeout
+    or refused connection carries no status_code, and used to be retried by
+    every job in the batch in turn.
+    """
+    if getattr(exc, "status_code", None) in (404, 429, 500, 502, 503, 504):
+        return True
+    return type(exc).__name__ in {"APITimeoutError", "APIConnectionError", "Timeout", "ConnectError"}
 
 
 def ask_json(
@@ -182,10 +205,18 @@ def ask_json(
                     response_format={"type": "json_object"},
                     **limit,
                 )
-                content = (response.choices[0].message.content or "").strip()
+                choice = response.choices[0]
+                if getattr(choice, "finish_reason", None) == "length":
+                    raise _Truncated(f"reply cut off at max_tokens={max_tokens}")
+                content = (choice.message.content or "").strip()
                 if not content:
                     raise ValueError("empty response")
-                return json.loads(content)
+                data = json.loads(content)
+                # Callers do data.get(...). A list or a bare string used to raise
+                # AttributeError outside their try and fail the job's tailoring.
+                if not isinstance(data, dict):
+                    raise ValueError(f"expected a JSON object, got {type(data).__name__}")
+                return data
             except Exception as exc:  # noqa: BLE001 - retried, then surfaced
                 last_error = exc
                 wait = _wait_for(exc, attempt)
@@ -197,7 +228,7 @@ def ask_json(
                 if final:
                     # Overloaded, out of quota, or retired: sit it out, so the
                     # next job goes straight to the fallback or the offline path.
-                    if getattr(exc, "status_code", None) in (404, 429, 500, 502, 503, 504):
+                    if _is_outage(exc):
                         pause = DAILY_COOLDOWN_S if _is_daily_quota(exc) else COOLDOWN_S
                         _down_until[chosen] = time.time() + pause
                     break

@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 from backend import seen_ledger
 from backend.applier.ats import detect_ats
 from backend.applier.fields import (
+    JOB_LOCATION,
     OPTION_FALLBACKS,
     is_consent_label,
     is_skip_field,
@@ -70,6 +71,7 @@ class ScrapedField(BaseModel):
     label: str = ""
     group_label: str = ""          # fieldset/legend text for radio groups
     option_label: str = ""         # this radio's own label
+    group_key: str = ""            # radio's shared question container, for nameless radios
     value: str = ""
     checked: bool = False
     required: bool = False
@@ -330,6 +332,92 @@ def _resolve_one(
     return Fill(**base, action="skip", reason=f"unsupported type {ftype}")
 
 
+def _radio_group_key(field: ScrapedField) -> str:
+    """
+    Which question a radio belongs to. By `name` where the page gives one;
+    otherwise by the question container the scraper saw (`group_key`), then
+    by the question text within its entry. Only a radio with none of those
+    stands alone — and `_resolve_radio_group` then clicks it only if its own
+    label is the answer.
+    """
+    if field.name:
+        return f"name:{field.name}"
+    if field.group_key:
+        return f"box:{field.group_key}"
+    if field.group_label:
+        return f"q:{field.section_kind}|{field.section_index}|{field.group_label.strip().lower()}"
+    return f"__{field.idx}"
+
+
+# Word ends for radio-label matching: "No, I will not" starts with the word
+# "no"; "Yes, I will now…" does not contain it.
+_RADIO_DELIM = r"[\s()\[\],/|:;!?]"
+_RADIO_NEGATION = re.compile(r"(?:^|[^a-z])(?:no|not|never|none|cannot)(?![a-z])|n['’]t(?![a-z])")
+_RADIO_DECLINE = ("decline", "prefer not", "do not wish", "don't wish", "not to answer", "not to say")
+_RADIO_YES = {"yes", "y", "true", "1"}
+_RADIO_NO = {"no", "n", "false", "0"}
+
+
+def _radio_norm(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "").strip().lower())
+
+
+def _starts_with_word(text: str, word: str) -> bool:
+    return bool(word) and bool(re.match(rf"{re.escape(word)}(?:$|{_RADIO_DELIM}|[.\-](?:\s|$))", text))
+
+
+def _contains_word(text: str, word: str) -> bool:
+    return bool(word) and bool(
+        re.search(rf"(?:^|{_RADIO_DELIM}){re.escape(word)}(?:$|{_RADIO_DELIM}|[.\-](?:\s|$))", text)
+    )
+
+
+def _leading_yes_no(text: str) -> str:
+    for word in ("yes", "no"):
+        if _starts_with_word(text, word):
+            return word
+    return ""
+
+
+def _radio_rank(label: str, desired: str) -> int:
+    """0 exact … 4 whole word inside; -1 when this label is not the answer."""
+    text, want = _radio_norm(label), _radio_norm(desired)
+    if want in _RADIO_YES:
+        want = "yes"
+    elif want in _RADIO_NO:
+        want = "no"
+    if not text or not want:
+        return -1
+    if text == want:
+        return 0
+    lead = _leading_yes_no(want)
+    if lead:
+        if _leading_yes_no(text) != lead:
+            return -1
+        if want == lead:
+            return 1
+    if any(x in want for x in _RADIO_DECLINE) and any(x in text for x in _RADIO_DECLINE):
+        return 1
+    if bool(_RADIO_NEGATION.search(text)) != bool(_RADIO_NEGATION.search(want)):
+        return -1
+    if _starts_with_word(text, want):
+        return 2
+    if _starts_with_word(want, text):
+        return 3
+    if _contains_word(text, want):
+        return 4
+    return -1
+
+
+def _radio_label_matches(label: str, desired: str) -> bool:
+    return _radio_rank(label, desired) >= 0
+
+
+def _best_radio_label(labels: List[str], desired: str) -> Optional[str]:
+    ranked = [(r, len(l), i) for i, l in enumerate(labels) if (r := _radio_rank(l, desired)) >= 0]
+    return labels[min(ranked)[2]] if ranked else None
+
+
 def _resolve_radio_group(
     profile: ApplicantProfile,
     group: List[ScrapedField],
@@ -345,6 +433,12 @@ def _resolve_radio_group(
         return []
     labels = [f.option_label or f.label or f.value for f in group]
     choice = pick_option(labels, desired)
+    # A radio is only clicked when its own label says the answer. pick_option
+    # returns the sole option of a one-item list whatever was asked, so a
+    # radio the grouping could not pair with its siblings would otherwise be
+    # "answered" Yes to a question whose answer is No.
+    if not choice or not _radio_label_matches(choice, desired):
+        choice = _best_radio_label(labels, desired)
     if not choice:
         return []
     for field, option in zip(group, labels):
@@ -383,14 +477,20 @@ def resolve(req: ResolveRequest, db: Session = Depends(get_db)):
     fills: List[Fill] = []
     radio_groups: Dict[str, List[ScrapedField]] = {}
 
-    for field in req.fields:
-        if (field.type or "").lower() == "radio":
-            radio_groups.setdefault(field.name or f"__{field.idx}", []).append(field)
-            continue
-        fills.append(_resolve_one(profile, field, job_title, company, req.overwrite))
+    # "Will you require sponsorship?" means sponsorship where the job is. Only
+    # a known job has a location; an unknown page leaves such questions blank.
+    token = JOB_LOCATION.set((job.location if job else "") or "")
+    try:
+        for field in req.fields:
+            if (field.type or "").lower() == "radio":
+                radio_groups.setdefault(_radio_group_key(field), []).append(field)
+                continue
+            fills.append(_resolve_one(profile, field, job_title, company, req.overwrite))
 
-    for group in radio_groups.values():
-        fills.extend(_resolve_radio_group(profile, group, job_title, company))
+        for group in radio_groups.values():
+            fills.extend(_resolve_radio_group(profile, group, job_title, company))
+    finally:
+        JOB_LOCATION.reset(token)
 
     actionable = [f for f in fills if f.action != "skip"]
     answered = {f.idx for f in actionable}

@@ -17,7 +17,24 @@
     busy: false,
     pending: null,     // aggregation across frames, top frame only
     widgetShown: false,
+    dismissed: false,  // the user closed the panel; only an explicit Show reopens it
   };
+
+  // `message()` renders HTML, and labels scraped off the page, frame reports
+  // and backend errors are not ours. Everything of theirs goes through this.
+  const esc = (text) => TA.widget.escape(text);
+
+  // How long the top frame waits for a frame that announced it was starting
+  // before closing the tally without it. Generous: a Workday frame with ten
+  // skills and two employers takes well over the old fixed 15 seconds. A test
+  // may lower it through `TA.frameReportCapMs`.
+  const FRAME_REPORT_CAP_MS = 120000;
+  const frameCap = () => TA.frameReportCapMs || FRAME_REPORT_CAP_MS;
+
+  let runSeq = 0;
+  const newRunId = () => `${Date.now().toString(36)}-${(runSeq += 1)}`;
+
+  const EMPTY_REPORT = { scraped: 0, filled: 0, low: 0, failed: 0, unresolved: [] };
 
   /**
    * Reloading the extension orphans the content scripts already running in open
@@ -163,10 +180,16 @@
       unresolved: [], job_title: "", company: "", ats: "",
       known_job: false, missingResume: false, resume: "", error: "", stage: null, contextLost: false,
       failedLabels: [],
+      busyFrames: 0,   // frames that were still filling from an earlier run
+      unreported: 0,   // frames that said "starting" and never reported
     };
   }
 
   function merge(totals, r) {
+    if (r.busyFrame) {
+      totals.busyFrames += 1;
+      return totals;
+    }
     totals.scraped += r.scraped || 0;
     totals.filled += r.filled || 0;
     totals.low += r.low || 0;
@@ -206,7 +229,7 @@
 
     if (totals.error) {
       TA.widget.message(
-        `Backend unreachable — start it with <b>python run.py</b>.<br><span style="opacity:.7">${totals.error}</span>`,
+        `Backend unreachable — start it with <b>python run.py</b>.<br><span style="opacity:.7">${esc(totals.error)}</span>`,
         "err"
       );
       TA.widget.setBackend(false, totals.error);
@@ -240,14 +263,31 @@
     if (totals.failed) {
       // Naming the field is the difference between "something broke" and
       // "click this one yourself" — they are outlined red on the page too.
+      // The labels are scraped off the page, so they are escaped: a label is
+      // page-controlled text, and this lands in innerHTML.
       const names = totals.failedLabels
-        .map((l) => (l.length > 34 ? `${l.slice(0, 34)}…` : l))
+        .map((l) => String(l))
+        .map((l) => esc(l.length > 34 ? `${l.slice(0, 34)}…` : l))
         .join(", ");
       notes.push(
         `Set by hand (outlined red): <b>${names || `${totals.failed} field(s)`}</b>.`
       );
     }
-    TA.widget.message(notes.join(" "), "info");
+    // A frame that never answered is named, not silently left out of the
+    // tally — its fields may be half filled.
+    if (totals.unreported) {
+      notes.push(
+        `<b>${totals.unreported} embedded form(s) did not report back</b> — ` +
+        "these counts are incomplete. Check that part of the page before you submit."
+      );
+    }
+    if (totals.busyFrames) {
+      notes.push(
+        `<b>${totals.busyFrames} embedded form(s) were still filling</b> from the previous run ` +
+        "and were not filled again."
+      );
+    }
+    TA.widget.message(notes.join(" "), totals.unreported || totals.busyFrames ? "err" : "info");
   }
 
   async function runAll(opts) {
@@ -260,13 +300,20 @@
     // reports to wait for. Without the ack the top frame finishes its own
     // (usually tiny) form first and finalises the tally before the embedded
     // form — the one that holds all the fields — has even answered.
-    const pending = { totals: blankTotals(), expected: 0, reported: 0, ownDone: false, timer: null };
+    const runId = newRunId();
+    const pending = {
+      runId, totals: blankTotals(), expected: 0, reported: 0, ownDone: false, timer: null, cap: null,
+    };
     state.pending = pending;
 
     const done = () => {
       if (state.pending !== pending) return;
       state.pending = null;
       clearTimeout(pending.timer);
+      clearTimeout(pending.cap);
+      // A frame that announced itself and never answered is counted as
+      // missing, so the panel says the tally is incomplete.
+      pending.totals.unreported += Math.max(0, pending.expected - pending.reported);
       finish(pending.totals);
     };
 
@@ -282,8 +329,12 @@
       clearTimeout(pending.timer);
     };
 
+    // The cap runs from the start, not from when our own frame finished, and
+    // it only ever fires while some frame that said "starting" is still out.
+    pending.cap = setTimeout(done, frameCap());
+
     // Ask the other frames first so they ack while we fill our own.
-    send({ type: "broadcast", message: { type: "TA_RUN_FRAME", opts: opts || {} } });
+    send({ type: "broadcast", message: { type: "TA_RUN_FRAME", opts: { ...(opts || {}), runId } } });
 
     const mine = await runFrame(opts);
     if (state.pending === pending) {
@@ -291,9 +342,6 @@
       pending.ownDone = true;
       pending.maybeDone();
     }
-
-    // Hard stop, in case a frame acks and then never answers.
-    setTimeout(done, 15000);
   }
 
   // ── Fill one section ───────────────────────────────────────────────────────
@@ -305,7 +353,7 @@
 
   let picking = false;
 
-  async function armPicker() {
+  async function armPicker(runId) {
     if (picking) return;
     picking = true;
     TA.injectStyles();
@@ -331,13 +379,29 @@
     }
     // Claim it, so the other frames drop out of picking mode.
     send({ type: "broadcast", message: { type: "TA_PICK_CANCEL" } });
+    // overwrite:true stays for a section run — pointing at a block is asking
+    // for it to be (re)done. It is safe only because the scraper numbers the
+    // block's entry against the whole page, so what it writes is that same
+    // entry's answer, never employer 1's data over employer 2.
     if (isTop) {
       state.pending = null;
       await fillSection(section);
     } else {
       send({ type: "starting" });
-      const result = await runFrame({ overwrite: true, root: section });
-      send({ type: "report", result });
+      if (state.busy) {
+        send({ type: "report", result: { ...EMPTY_REPORT, busyFrame: true, runId } });
+        return;
+      }
+      state.busy = true;
+      let result;
+      try {
+        result = await runFrame({ overwrite: true, root: section });
+      } catch (e) {
+        result = { ...EMPTY_REPORT };
+      } finally {
+        state.busy = false;
+      }
+      send({ type: "report", result: { ...result, runId } });
     }
   }
 
@@ -363,12 +427,17 @@
       "info"
     );
 
-    const pending = { totals: blankTotals(), expected: 0, reported: 0, ownDone: true, timer: null };
+    const runId = newRunId();
+    const pending = {
+      runId, totals: blankTotals(), expected: 0, reported: 0, ownDone: true, timer: null, cap: null,
+    };
     state.pending = pending;
     const done = () => {
       if (state.pending !== pending) return;
       state.pending = null;
       clearTimeout(pending.timer);
+      clearTimeout(pending.cap);
+      pending.totals.unreported += Math.max(0, pending.expected - pending.reported);
       finish(pending.totals);
     };
     pending.maybeDone = () => {
@@ -382,10 +451,13 @@
       TA.widget.setBusy(true, "Filling section…");
       pending.expected += 1;
       clearTimeout(pending.timer);
+      // Only once a frame has actually started: until then the user may
+      // still be choosing where to click.
+      if (!pending.cap) pending.cap = setTimeout(done, frameCap());
     };
 
-    send({ type: "broadcast", message: { type: "TA_PICK" } });
-    await armPicker();
+    send({ type: "broadcast", message: { type: "TA_PICK", runId } });
+    await armPicker(runId);
   }
 
   // ── Messaging ──────────────────────────────────────────────────────────────
@@ -402,19 +474,36 @@
     // A child frame was told to fill itself. Ack first so the top frame knows
     // to wait for us, then always report — even a zero-field frame, so the
     // tally can close without waiting out the hard timeout.
+    //
+    // A frame still filling from the last run does not start a second fill on
+    // top of it — two runs writing the same widgets at once is how a Refill
+    // pressed mid-run corrupted an iframe. It says so instead, so the tally
+    // names it rather than leaving it out.
     if (message.type === "TA_RUN_FRAME" && !isTop) {
+      const runId = message.opts && message.opts.runId;
       send({ type: "starting" });
-      runFrame(message.opts).then(
-        (result) => send({ type: "report", result }),
-        () => send({ type: "report", result: { scraped: 0, filled: 0, low: 0, failed: 0, unresolved: [] } })
-      );
+      if (state.busy) {
+        send({ type: "report", result: { ...EMPTY_REPORT, busyFrame: true, runId } });
+        sendResponse({ ok: true, busy: true });
+        return;
+      }
+      state.busy = true;
+      runFrame(message.opts)
+        .then(
+          (result) => result,
+          () => ({ ...EMPTY_REPORT })
+        )
+        .then((result) => {
+          state.busy = false;
+          send({ type: "report", result: { ...result, runId } });
+        });
       sendResponse({ ok: true });
       return;
     }
 
     // Arm the picker in a child frame; the form is often not in the top one.
     if (message.type === "TA_PICK" && !isTop) {
-      armPicker();
+      armPicker(message.runId);
       sendResponse({ ok: true });
       return;
     }
@@ -434,8 +523,11 @@
     }
 
     // A child frame reported its counts back to us.
+    // A report carrying another run's id is a late answer to a run whose
+    // tally already closed, and would inflate this one's counts.
     if (message.type === "TA_REPORT" && isTop) {
-      if (state.pending) {
+      const runId = message.result && message.result.runId;
+      if (state.pending && (!runId || runId === state.pending.runId)) {
         merge(state.pending.totals, message.result);
         state.pending.reported += 1;
         state.pending.maybeDone();
@@ -455,7 +547,9 @@
       return;
     }
 
+    // The user asked for the panel: this is the one thing that undoes a close.
     if (message.type === "TA_SHOW" && isTop) {
+      state.dismissed = false;
       mountWidget(true);
       sendResponse({ ok: true });
       return;
@@ -492,7 +586,7 @@
       );
       TA.widget.setAppliedLabel("Applied ✓");
     } else {
-      TA.widget.message(`Could not reach the dashboard: ${reply.error}`, "err");
+      TA.widget.message(`Could not reach the dashboard: ${esc(reply.error)}`, "err");
     }
   }
 
@@ -556,16 +650,24 @@
   function mountWidget(force) {
     if (!isTop) return;
     if (TA.widget.isMounted()) return;
+    // Closed by the user: stays closed through every later DOM mutation and
+    // frame announcement until they ask for it again (TA_SHOW clears this).
+    if (state.dismissed) return;
     if (!force && !TA.looksLikeApplication()) return;
-    TA.widget.mount({
+    const fresh = TA.widget.mount({
       onFill: () => runAll({ overwrite: false }),
       onFillSection: pickAndFill,
       onRefill: () => runAll({ overwrite: true }),
       onApplied: markApplied,
       onTodoClick: focusTodo,
       onAction: clickThrough,
+      onClose: () => {
+        state.dismissed = true;
+      },
     });
     state.widgetShown = true;
+    // Only a newly built panel needs the stage and the handshake.
+    if (!fresh) return;
 
     // Show the gate before the user even presses Autofill.
     state.stageKey = null;
@@ -574,7 +676,7 @@
       if (reply.ok) {
         TA.widget.setBackend(true, `Profile: ${reply.data.name || "unnamed"}`);
         if (!reply.data.ready) {
-          TA.widget.message(`Profile incomplete: ${reply.data.missing.join(", ")}`, "err");
+          TA.widget.message(`Profile incomplete: ${esc((reply.data.missing || []).join(", "))}`, "err");
         } else if (!reply.data.has_resume) {
           TA.widget.message("No resume on file — upload one in Settings.", "err");
         }

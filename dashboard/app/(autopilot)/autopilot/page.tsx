@@ -14,6 +14,7 @@ import {
   type AutopilotStatus, type CallbackBucket, type CallbackStats, type Candidate,
   type CandidateStats, type QueueItem, type Tier,
 } from '@/lib/autopilot';
+import { safeHref } from '@/lib/safe-url';
 
 const TIER_ORDER: Tier[] = ['UNKNOWN', 'KNOWN', 'STRONG', 'ELITE', 'FAANG'];
 
@@ -450,7 +451,7 @@ function CandidateRow({
         )}
       </div>
       <a
-        href={candidate.apply_url || candidate.url}
+        href={safeHref(candidate.apply_url || candidate.url)}
         target="_blank"
         rel="noreferrer"
         className="mt-0.5 shrink-0 rounded-lg p-1.5 text-[var(--text-muted)] hover:bg-[var(--surface-2)] hover:text-[var(--text-primary)]"
@@ -499,7 +500,7 @@ function QueueRow({
           </button>
         )}
         <a
-          href={item.url}
+          href={safeHref(item.url)}
           target="_blank"
           rel="noreferrer"
           className="rounded-lg p-1.5 text-[var(--text-muted)] hover:bg-[var(--surface-2)]"

@@ -77,12 +77,18 @@ def break_ligatures(text: str) -> str:
     return out
 
 
+_ESCAPE_MAP = dict(_ESCAPES)
+_ESCAPE_RE = re.compile("|".join(re.escape(ch) for ch, _ in _ESCAPES))
+
+
 def escape(text: str) -> str:
-    """Plain text -> LaTeX-safe text, with ligatures defused."""
-    out = text
-    for raw, rep in _ESCAPES:
-        out = out.replace(raw, rep)
-    return break_ligatures(out)
+    """
+    Plain text -> LaTeX-safe text, with ligatures defused.
+
+    One pass over the input. Replacing character by character re-escaped the
+    braces of `\\textbackslash{}` itself and printed `\\textbackslash\\{\\}`.
+    """
+    return break_ligatures(_ESCAPE_RE.sub(lambda m: _ESCAPE_MAP[m.group(0)], text))
 
 
 # Injected just before \begin{document}. Handles the frozen parts of the
@@ -182,8 +188,12 @@ def is_plain(tex: str) -> bool:
     """True when a span holds prose only, so it is safe to reword."""
     if "$" in tex:                       # inline maths, e.g. $O(\log n)$
         return False
+    # "~" is a tie and "\," "\'" "\ " are spacing and accents: none survives a
+    # trip through plain text, so a span holding one is not rewordable.
+    if "~" in tex:
+        return False
     stripped = _ALLOWED_ESCAPE_RE.sub("", tex)
-    return not _ANY_COMMAND_RE.search(stripped)
+    return "\\" not in stripped
 
 
 @dataclass
@@ -669,6 +679,43 @@ def parse_file(path) -> TexDoc:
     from pathlib import Path
 
     return parse(Path(path).read_text(encoding="utf-8"))
+
+
+def _plain(fragment: str) -> str:
+    body = re.sub(r"(?m)^\s*%.*$", " ", fragment)
+    body = re.sub(r"\\href\s*\{[^{}]*\}", " ", body)                # URLs are not claims
+    body = re.sub(r"\\[A-Za-z@]+\s*(\[[^\]]*\])?", " ", body)
+    body = body.replace("{", " ").replace("}", " ").replace("$", " ").replace("\\", " ")
+    return re.sub(r"\s+", " ", body).strip()
+
+
+def entry_context(doc: TexDoc, slot: Slot) -> str:
+    """
+    What a bullet may draw names and technologies from: its entry's heading
+    (a project heading carries its stack — "Java 17, Spring Boot, MySQL") and
+    its sibling bullets. Not the rest of the resume: that is how a Paytm bullet
+    was allowed to say "at Denr Financial Services".
+    """
+    if slot.kind != "bullet":
+        return prose_text(doc)
+    members = [s for s in doc.slots if (s.section, s.entry) == (slot.section, slot.entry)]
+    first = min(s.outer_start for s in members)
+    last = max(s.outer_end for s in members)
+    # The heading sits between the previous slot and this entry's first bullet.
+    before = [s.outer_end for s in doc.slots if s.outer_end <= first]
+    start = max(before) if before else body_span(doc.source)[0]
+    return _plain(doc.source[start:last])
+
+
+def prose_text(doc: TexDoc) -> str:
+    """
+    The resume's sentences and skills — what the summary may summarise. Not
+    the preamble or the header: those hold `0.97\\textwidth` and the phone
+    number, whose digits once let 40% become 64% or 97%.
+    """
+    parts = [s.text for s in doc.slots]
+    parts += [unescape(item) for line in doc.skills for item in line.items]
+    return "\n".join(parts)
 
 
 def plain_text(doc: TexDoc) -> str:

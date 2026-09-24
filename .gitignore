@@ -1,55 +1,51 @@
+# ── Secrets and personal data ────────────────────────────────────────────────
+# Every .env variant, backups included (`.env` alone matches only that name,
+# so config/.env.bak used to be committable). config/env.template is the
+# tracked, placeholder-only template.
 .env
-.env.example
-config/.env
+.env.*
+*.env
+*.env.bak
+config/.env*
+*.bak
+# The applicant profile holds phone, address, salary and EEO answers. It was
+# tracked; `git rm --cached` keeps the local file and stops tracking it.
+config/applicant_profile.json
+# per-tenant Workday logins (plaintext, local only)
+config/workday_accounts.json
 
-# Python
+# ── Python ───────────────────────────────────────────────────────────────────
 __pycache__
 venv
 .venv
+backend/venv/
+
+# ── Databases ────────────────────────────────────────────────────────────────
 *.db
-# Backend
+*.sqlite
 backend/db/*.db
 backend/db/*.sqlite
-
-# Dashboard
 .dashboard/dashboard.db
 .dashboard/dashboard.sqlite
 
-# Temporary files
-temp/*
-temp/**
+# ── Runtime data: screenshots of filled forms, browser sessions, cookies ─────
+data/*
+!data/apply_logs/
+data/apply_logs/*
+!data/apply_logs/.gitkeep
 
-# Logs
-logs/*
-logs/**
-
-# Apply screenshots and generated resumes
-data/apply_logs/*.png
+# ── Resumes: only the master .tex is tracked ─────────────────────────────────
 resumes/*.pdf
 resumes/*.doc
 resumes/*.docx
-data/browser_state.json
-data/chrome_profile/
-
-# Temporary files
-temp/*
-temp/**
-
-# Logs
-logs/*
-logs/**
-
-# Apply screenshots and generated resumes
-data/apply_logs/*.png
-resumes/*.pdf
-resumes/*.doc
-resumes/*.docx
-
-# resume tailoring
-tools/
 resumes/tailored/
+resumes/archive/
+
+# ── Tooling and temporary files ──────────────────────────────────────────────
+tools/
+temp/*
+temp/**
+logs/*
+logs/**
 backend/resume/testdata/*.pdf
 backend/resume/testdata/*.log
-backend/venv/
-# per-tenant Workday logins (plaintext, local only)
-config/workday_accounts.json

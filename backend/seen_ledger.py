@@ -50,6 +50,24 @@ BLOCKING_STATUSES = {
 # record stopping the job coming back.
 NON_BLOCKING_STATUSES = {"seen", "discovered", "filtered", "expired", "cleared"}
 
+# How strong a decision each status records. `mark` only ever moves a row to
+# an equal or stronger rank, never down: Clear, purge-stale and purge-
+# experienced used to write "cleared" / "expired" / "filtered" over
+# "dismissed" and "visited", and the next scan re-offered jobs the user had
+# already opened, dismissed or been rejected from. Moves within a rank stay
+# free — applied -> interviewing -> offer -> rejected is one application's
+# life, and the non-blocking statuses are all equally "no decision".
+STATUS_RANK = {
+    "seen": 0, "discovered": 0, "filtered": 0, "expired": 0, "cleared": 0,
+    "visited": 1,
+    "dismissed": 2,
+    "applied": 3, "interviewing": 3, "rejected": 3, "offer": 3,
+}
+
+
+def status_rank(status: str) -> int:
+    return STATUS_RANK.get(status or "", 0)
+
 # Query parameters that identify the referrer rather than the posting. Stripping
 # them lets the same job arrive from two searches and dedupe to one row. Only
 # these are removed - parameters like Greenhouse's gh_jid carry the job id
@@ -183,7 +201,11 @@ def mark(
     platform: str = "",
     commit: bool = False,
 ) -> Optional[SeenJob]:
-    """Set a ledger status, creating the row if the job was never recorded."""
+    """Set a ledger status, creating the row if the job was never recorded.
+
+    Never downgrades (see STATUS_RANK): marking a dismissed job "cleared"
+    leaves it dismissed. `unblock` is the one deliberate way down.
+    """
     key = url_key(url)
     if not key:
         return None
@@ -200,6 +222,10 @@ def mark(
             times_seen=1,
         )
         db.add(row)
+    elif status_rank(status) < status_rank(row.status):
+        if commit:
+            db.commit()
+        return row
     row.status = status
     row.reason = reason[:500]
     if commit:
@@ -216,6 +242,46 @@ def mark_jobs(db: Session, jobs: Iterable[Job], status: str, reason: str = "") -
             url=job.url,
             status=status,
             reason=reason,
+            title=job.title or "",
+            company=job.company or "",
+            platform=job.platform or "",
+        )
+        count += 1
+    return count
+
+
+def decision_for(job: Job, default: str) -> str:
+    """The ledger status a jobs row's own state already implies.
+
+    A row being removed from the queue carries decisions — applied, rejected,
+    ignored (the dashboard's dismiss), opened — that must reach the ledger
+    before the row is gone. `default` is used only when it carries none.
+    """
+    if (job.apply_status or "") == "applied":
+        return "applied"
+    status = _JOB_STATUS_TO_LEDGER.get(job.status or "")
+    if status:
+        return status
+    if job.visited_at:
+        return "visited"
+    return default
+
+
+def mark_removed_jobs(db: Session, jobs: Iterable[Job], default: str, reason: str) -> int:
+    """`mark_jobs`, keeping each row's own decision over `default`.
+
+    Call before deleting. The reason is prefixed for a row whose decision
+    wins, so it cannot collide with the exact string `_release_cleared_jobs`
+    (models.py) matches when it releases old "dismissed" Clear entries.
+    """
+    count = 0
+    for job in jobs:
+        status = decision_for(job, default)
+        mark(
+            db,
+            url=job.url,
+            status=status,
+            reason=reason if status == default else f"{status}; then {reason}",
             title=job.title or "",
             company=job.company or "",
             platform=job.platform or "",

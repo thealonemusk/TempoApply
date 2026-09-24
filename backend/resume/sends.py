@@ -30,7 +30,9 @@ MIN_SAMPLE = 20
 
 
 def _report_for(pdf: Path) -> Dict[str, Any]:
-    report = pdf.parent / "report.json"
+    # The uploaded copy lives in <job dir>/upload/, the report in <job dir>/.
+    folder = pdf.parent.parent if pdf.parent.name == "upload" else pdf.parent
+    report = folder / "report.json"
     if not report.is_file():
         return {}
     try:

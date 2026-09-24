@@ -13,6 +13,7 @@ companies being targeted a wasted application costs months.
 from __future__ import annotations
 
 import asyncio
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -33,6 +34,7 @@ router = APIRouter(prefix="/api/autopilot", tags=["autopilot"])
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 SHOT_DIR = PROJECT_ROOT / "data" / "apply_logs"
+CLOSED_STATUSES = ["applied", "interviewing", "offer", "rejected", "ignored"]
 
 # Same shape as _scan_status / _apply_status in main.py, kept separate so an
 # autopilot run and a plain scan cannot corrupt each other's state.
@@ -83,7 +85,9 @@ def candidates(
     The rejected list is returned on purpose: it is the only way to tell whether
     the criteria are excluding what you meant them to.
     """
-    jobs = db.query(Job).filter(~Job.status.in_(["applied", "interviewing", "offer"])).all()
+    # Rejected and ignored are decisions, not a queue: re-selecting them
+    # re-filled jobs the user had closed, and "tailored" overwrote the status.
+    jobs = db.query(Job).filter(~Job.status.in_(CLOSED_STATUSES)).all()
     chosen, passed = select(
         jobs,
         preferred_locations=settings.preferred_locations_list,
@@ -179,6 +183,10 @@ async def run(req: RunRequest, background_tasks: BackgroundTasks) -> Dict[str, A
         finally:
             _status.update(running=False, stage="done", current="", last_result=result)
 
+    # Claimed here, not inside the task: a background task starts after the
+    # response, so a double click used to pass the check above twice and start
+    # two runs over the same jobs.
+    _status["running"] = True
     background_tasks.add_task(task)
     return {"message": "Autopilot started", "running": True, "jobs": len(req.job_ids)}
 
@@ -191,7 +199,16 @@ def _tailor_all(job_ids: List[str]) -> List[Dict[str, Any]]:
     db = SessionLocal()
     try:
         for i, job_id in enumerate(job_ids, 1):
-            job = db.query(Job).filter(Job.id == job_id).first()
+            try:
+                job = db.query(Job).filter(Job.id == job_id).first()
+            except Exception as exc:  # noqa: BLE001
+                # A failed commit on the previous job (SQLite "database is
+                # locked" while the extension writes) leaves the session
+                # needing a rollback; without one every later query raised,
+                # _tailor_all died, and the fill stage never ran.
+                db.rollback()
+                out.append({"job_id": job_id, "ok": False, "error": f"database: {exc}"})
+                continue
             if not job:
                 continue
             _status.update(done=i, current=f"{job.title} @ {job.company}")
@@ -209,10 +226,13 @@ def _tailor_all(job_ids: List[str]) -> List[Dict[str, Any]]:
                     "error": res.error,
                     "coverage": (res.report.get("coverage", {}) or {}).get("delta"),
                 })
-                if res.ok:
+                # Only an open job moves to "tailored"; a status the user
+                # set (applied, rejected, ignored) is theirs, not the bot's.
+                if res.ok and job.status in {"discovered", "scored", "tailored"}:
                     job.status = "tailored"
                     db.commit()
             except Exception as exc:  # noqa: BLE001
+                db.rollback()
                 out.append({"job_id": job_id, "ok": False, "error": str(exc)})
     finally:
         db.close()
@@ -256,6 +276,9 @@ def queue(db: Session = Depends(get_db)) -> Dict[str, Any]:
 @router.get("/screenshot/{job_id}")
 def screenshot(job_id: str):
     """The filled form, as the bot left it."""
+    # Joined into a path: "..\\x" would walk out of the log directory.
+    if not re.fullmatch(r"[0-9A-Za-z-]{8,64}", job_id or ""):
+        raise HTTPException(status_code=404, detail="No screenshot for this job")
     for name in (f"{job_id}-filled.png", f"{job_id}.png"):
         path = SHOT_DIR / name
         if path.is_file():

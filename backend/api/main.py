@@ -2,6 +2,7 @@
 FastAPI REST API for TempoApply dashboard.
 """
 import asyncio
+import re
 import sys
 from pathlib import Path
 from typing import List, Optional
@@ -37,16 +38,62 @@ def _env_path() -> Path:
 
 app = FastAPI(title="TempoApply API", version="1.0.0")
 
+DASHBOARD_ORIGINS = ["http://localhost:3000", "http://127.0.0.1:3000"]
+
+
+def _extension_origin_re() -> str:
+    # The service worker calls from chrome-extension://<id>. An unpacked
+    # install's id changes per machine, so any extension is accepted unless
+    # EXTENSION_ID pins this one — then no other installed extension can read
+    # the profile or the resume.
+    pinned = (getattr(settings, "extension_id", "") or "").strip()
+    if pinned and re.fullmatch(r"[a-p]{32}", pinned):
+        return rf"^chrome-extension://{pinned}$"
+    return r"^(chrome|moz)-extension://[A-Za-z0-9-]+$"
+
+
+_EXTENSION_ORIGIN = re.compile(_extension_origin_re())
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
-    # The browser extension's service worker calls the API from a
-    # chrome-extension:// origin, which changes with every unpacked install.
-    allow_origin_regex=r"^(chrome|moz)-extension://.*$",
+    allow_origins=DASHBOARD_ORIGINS,
+    allow_origin_regex=_extension_origin_re(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+_LOCAL_HOSTS = {"localhost", "127.0.0.1", "[::1]", "::1"}
+_SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+
+
+@app.middleware("http")
+async def local_only(request, call_next):
+    """
+    Two checks CORS does not make.
+
+    Host: a page on the internet can rebind its own domain to 127.0.0.1 and
+    then read this API as same-origin. Its requests still carry that domain in
+    the Host header, so anything but localhost is refused.
+
+    Origin on writes: CORS stops a page *reading* a response, not *sending* the
+    request. A "simple" POST (no-cors, no Content-Type) reaches the handler
+    with no preflight, and FastAPI parses the body as JSON anyway — so any site
+    could start an apply or rewrite .env. Browsers send Origin on every
+    cross-origin POST; one that is not the dashboard or the extension is
+    refused. Scripts on this machine send none and are unaffected.
+    """
+    from fastapi.responses import JSONResponse
+
+    host = (request.url.hostname or "").lower()
+    if host not in _LOCAL_HOSTS:
+        return JSONResponse({"detail": "TempoApply only answers on localhost"}, status_code=403)
+    origin = request.headers.get("origin")
+    if request.method not in _SAFE_METHODS and origin:
+        allowed = origin in DASHBOARD_ORIGINS or _EXTENSION_ORIGIN.match(origin)
+        if not allowed:
+            return JSONResponse({"detail": f"Origin {origin} may not change TempoApply"}, status_code=403)
+    return await call_next(request)
 
 app.include_router(autofill_router)
 app.include_router(autopilot_router)
@@ -107,7 +154,7 @@ class StatusUpdate(BaseModel):
 
 class ApplyRequest(BaseModel):
     job_ids: Optional[List[str]] = None
-    auto_submit: bool = True
+    auto_submit: bool = False  # ignored: TempoApply never submits
     headless: bool = False
 
 
@@ -118,6 +165,15 @@ class ManualJobRequest(BaseModel):
     jd_text: str
     location: str = ""
     platform: str = "manual"
+
+    @field_validator("url")
+    @classmethod
+    def http_only(cls, value: str) -> str:
+        # The dashboard renders this as a link; "javascript:..." would run on
+        # the dashboard's origin, which the API trusts with credentials.
+        if not re.match(r"^https?://", (value or "").strip(), re.I):
+            raise ValueError("url must start with http:// or https://")
+        return value.strip()
 
 
 # ─── Jobs Endpoints ──────────────────────────────────────────────────────────
@@ -212,6 +268,20 @@ def update_job_status(job_id: str, update: StatusUpdate, db: Session = Depends(g
         job.applied_at = datetime.utcnow()
     if update.notes and job.application:
         job.application.notes = update.notes
+    # A status that is a decision (applied, rejected, ignored -> dismissed, ...)
+    # goes to the ledger now, not only when some later purge happens to read
+    # it off the row: before this, "rejected" never reached it at all.
+    decision = seen_ledger.decision_for(job, default="")
+    if decision:
+        seen_ledger.mark(
+            db,
+            url=job.url,
+            status=decision,
+            reason=f"set to {update.status} on the dashboard",
+            title=job.title or "",
+            company=job.company or "",
+            platform=job.platform or "",
+        )
     db.commit()
     return {"success": True, "status": update.status}
 
@@ -264,25 +334,16 @@ def clear_discovered_jobs(
 
     jobs_to_delete = db.query(Job).filter(Job.status.in_(statuses)).all()
 
-    # An applied row keeps its "applied" ledger status; only the rest become
-    # "cleared". Downgrading applied to cleared would offer the job back.
-    applied_count = 0
-    tidied = []
-    for job in jobs_to_delete:
-        if job.status == "applied" or job.apply_status == "applied":
-            applied_count += 1
-            seen_ledger.mark(
-                db,
-                url=job.url,
-                status="applied",
-                reason="cleared from the dashboard after applying",
-                title=job.title or "",
-                company=job.company or "",
-                platform=job.platform or "",
-            )
-        else:
-            tidied.append(job)
-    seen_ledger.mark_jobs(db, tidied, "cleared", "cleared from the dashboard")
+    # Only a row carrying no decision becomes "cleared". Applied, rejected,
+    # ignored (dismissed) and opened (visited) rows keep that decision in the
+    # ledger — writing "cleared" over them put jobs the user had already
+    # dismissed, opened or been rejected from back into the next scan. `mark`
+    # also refuses to downgrade whatever the ledger already holds.
+    applied_count = sum(
+        1 for job in jobs_to_delete
+        if job.status == "applied" or job.apply_status == "applied"
+    )
+    seen_ledger.mark_removed_jobs(db, jobs_to_delete, "cleared", "cleared from the dashboard")
 
     deleted_count = 0
     for job in jobs_to_delete:
@@ -347,15 +408,9 @@ def purge_experienced_jobs(db: Session = Depends(get_db)):
         if is_valid and job.platform == "company_careers":
             is_valid, _ = is_career_listing_eligible(job_dict)
         if not is_valid:
-            seen_ledger.mark(
-                db,
-                url=job.url,
-                status="filtered",
-                reason="failed hard filters on purge",
-                title=job.title or "",
-                company=job.company or "",
-                platform=job.platform or "",
-            )
+            # Rejected / ignored / opened rows keep that decision; only an
+            # undecided row is recorded as merely "filtered".
+            seen_ledger.mark_removed_jobs(db, [job], "filtered", "failed hard filters on purge")
             if job.application:
                 db.delete(job.application)
             db.delete(job)
@@ -424,6 +479,12 @@ def _scan_is_stalled() -> bool:
     return bool(_scan_status["running"]) and _scan_runtime() > SCAN_STALL_SECONDS
 
 
+def _autopilot_running() -> bool:
+    from backend.api.autopilot import _status as autopilot_status
+
+    return bool(autopilot_status.get("running"))
+
+
 @app.post("/api/scan")
 async def start_scan(req: ScanRequest, background_tasks: BackgroundTasks):
     """Trigger a background job scan across platforms."""
@@ -433,6 +494,10 @@ async def start_scan(req: ScanRequest, background_tasks: BackgroundTasks):
             detail=f"A scan has been running for {int(_scan_runtime())}s. "
                    f"Stop it first, or wait for it to finish.",
         )
+    # A scan and a fill share one persistent Chrome profile; the second to
+    # start cannot open it, and the scan then reports "0 roles" silently.
+    if _apply_status["running"] or _autopilot_running():
+        raise HTTPException(status_code=409, detail="An apply run is in progress — wait for it to finish")
     if _scan_is_stalled():
         logger.warning(
             f"Previous scan wedged after {int(_scan_runtime())}s — starting a new one"
@@ -525,7 +590,10 @@ def get_profile():
 
 @app.put("/api/profile")
 def update_profile(payload: dict):
-    profile = save_profile(payload)
+    try:
+        profile = save_profile(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     data = profile.to_dict()
     data["missing"] = profile.missing_required()
     data["has_resume"] = profile.resume_file() is not None
@@ -564,16 +632,42 @@ async def stop_apply():
 
 
 @app.post("/api/apply")
-async def start_apply(req: ApplyRequest, background_tasks: BackgroundTasks):
+async def start_apply(
+    req: ApplyRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
     if _apply_status["running"]:
         raise HTTPException(status_code=409, detail="Apply already running")
     if _scan_status["running"]:
         raise HTTPException(status_code=409, detail="Scan is running — wait until it finishes")
+    if _autopilot_running():
+        raise HTTPException(status_code=409, detail="Autopilot is running — wait until it finishes")
 
     profile = load_profile()
     missing = [m for m in profile.missing_required() if m != "resume"]
     if missing:
         raise HTTPException(status_code=400, detail="Profile incomplete: " + ", ".join(missing))
+
+    # Which jobs, decided here. The dashboard now sends the ids it counted in
+    # its confirm dialog. With no ids, the run used to take every non-skipped
+    # row in the database — stale ones GET /api/jobs hides included — so
+    # "apply to 12 jobs?" could start 40. The same freshness rule applies now.
+    # An explicit empty list is refused: the engine reads [] as "everything".
+    job_ids = req.job_ids
+    if job_ids is not None and not job_ids:
+        raise HTTPException(status_code=400, detail="No jobs selected")
+    if job_ids is None:
+        from backend.applier.engine import eligible_jobs
+
+        cutoff = datetime.utcnow() - timedelta(hours=JOB_FRESHNESS_HOURS)
+        job_ids = [
+            j.id for j in eligible_jobs(db)
+            if j.status not in ("discovered", "scored")
+            or (j.discovered_at is not None and j.discovered_at >= cutoff)
+        ]
+        if not job_ids:
+            raise HTTPException(status_code=400, detail="No eligible jobs to apply to")
 
     # Claimed before the task is queued, for the same reason as the scan: a
     # background task starts after the response, so the dashboard's first poll
@@ -585,7 +679,7 @@ async def start_apply(req: ApplyRequest, background_tasks: BackgroundTasks):
         try:
             from backend.applier.engine import run_apply_pipeline
             result = await run_apply_pipeline(
-                job_ids=req.job_ids,
+                job_ids=job_ids,
                 auto_submit=req.auto_submit,
                 headless=req.headless,
             )
@@ -606,7 +700,7 @@ async def apply_single_job(job_id: str, background_tasks: BackgroundTasks, db: S
     job = db.query(Job).filter(Job.id == job_id).first()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-    req = ApplyRequest(job_ids=[job_id], auto_submit=True, headless=False)
+    req = ApplyRequest(job_ids=[job_id], auto_submit=False, headless=False)
     return await start_apply(req, background_tasks)
 
 
@@ -667,7 +761,7 @@ def update_settings(new_settings: dict):
 
     existing_lines = []
     if env_path.exists():
-        existing_lines = env_path.read_text().splitlines()
+        existing_lines = env_path.read_text(encoding="utf-8").splitlines()
 
     updates = {
         "TARGET_ROLES": ",".join(new_settings.get("target_roles", settings.target_roles_list)),
@@ -689,15 +783,37 @@ def update_settings(new_settings: dict):
         "INSTAHYRE_PASSWORD": new_settings.get("instahyre_password", settings.instahyre_password),
     }
 
-    existing_keys = {}
+    # A value is written as one `KEY=value` line. A newline inside one would
+    # start a line of the caller's choosing — "x\nOPENAI_BASE_URL=https://evil"
+    # sent every later tailoring call, API key included, to that host.
+    for key, value in updates.items():
+        if any(ch in str(value) for ch in "\r\n\x00"):
+            raise HTTPException(status_code=400, detail=f"{key} may not contain a line break")
+    updates = {k: str(v) for k, v in updates.items()}
+
+    # Rewrite in place: keep comments, blank lines and the order of the file,
+    # replace only the keys being set, append the ones that are new.
+    out, seen = [], set()
     for line in existing_lines:
-        if "=" in line and not line.startswith("#"):
-            k, _, v = line.partition("=")
-            existing_keys[k.strip()] = v.strip()
+        key = line.partition("=")[0].strip()
+        if "=" in line and not line.lstrip().startswith("#") and key in updates:
+            out.append(f"{key}={updates[key]}")
+            seen.add(key)
+        else:
+            out.append(line)
+    out.extend(f"{k}={v}" for k, v in updates.items() if k not in seen)
+    env_path.write_text("\n".join(out) + "\n", encoding="utf-8")
 
-    existing_keys.update(updates)
-
-    new_content = "\n".join(f"{k}={v}" for k, v in existing_keys.items())
-    env_path.write_text(new_content)
+    # The settings object is built once at import. Without this, a change here
+    # did nothing until the server was restarted, while GET /api/settings kept
+    # reporting the old values.
+    for key, value in updates.items():
+        attr = key.lower()
+        if hasattr(settings, attr):
+            current = getattr(settings, attr)
+            try:
+                setattr(settings, attr, type(current)(value) if not isinstance(current, str) else value)
+            except (TypeError, ValueError):
+                pass
 
     return {"success": True}

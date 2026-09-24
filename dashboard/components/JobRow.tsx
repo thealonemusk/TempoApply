@@ -5,6 +5,7 @@ import { motion } from 'framer-motion';
 import { Check, ExternalLink, Send } from 'lucide-react';
 import { Job } from '@/lib/types';
 import { ApplyStatusBadge, AtsBadge, PlatformBadge, ScoreBadge, VisitedBadge } from '@/components/ui/Badge';
+import { safeHref } from '@/lib/safe-url';
 
 interface JobRowProps {
   job: Job;
@@ -119,7 +120,7 @@ export function JobCard({
             {alreadyApplied ? <Check className="h-4 w-4" /> : <Send className="h-4 w-4" />}
           </button>
           <a
-            href={job.url}
+            href={safeHref(job.url)}
             target="_blank"
             rel="noopener noreferrer"
             onClick={() => !visited && onVisit(job.id)}
@@ -224,7 +225,7 @@ export function JobRow({
             <Send className="h-4 w-4" />
           </button>
           <a
-            href={job.url}
+            href={safeHref(job.url)}
             target="_blank"
             rel="noopener noreferrer"
             onClick={() => !visited && onVisit(job.id)}

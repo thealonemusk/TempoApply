@@ -205,8 +205,22 @@
   let host = null;
   let root = null;
   let el = {};
+  let wired = false;       // handlers attached to the current panel
+  let onClose = null;
+
+  /** Forget the panel entirely, so the next mount builds a fresh one. */
+  function teardown() {
+    if (host) host.remove();
+    host = null;
+    root = null;
+    el = {};
+    wired = false;
+  }
 
   function build() {
+    // A panel the page itself removed (a portal re-rendering <body>) is
+    // rebuilt rather than written to while detached.
+    if (host && !host.isConnected) teardown();
     if (host) return;
     host = document.createElement("div");
     host.id = "tempoapply-widget-host";
@@ -247,12 +261,22 @@
       const collapsed = el.panel.classList.toggle("collapsed");
       el.toggle.textContent = collapsed ? "+" : "–";
     });
-    el.close.addEventListener("click", () => host.remove());
+    // Closing clears `host` too. Leaving it set meant `build` returned early
+    // forever after, so Show could never bring the panel back, while every
+    // later mount wired more listeners onto the detached copy.
+    el.close.addEventListener("click", () => {
+      teardown();
+      if (onClose) onClose();
+    });
     makeDraggable();
   }
 
+  // Drag state lives here, and the window listeners are added once: the panel
+  // can be closed and rebuilt, and each rebuild must not stack another pair.
+  let startX = 0, startY = 0, originX = 0, originY = 0, dragging = false;
+  let windowDragWired = false;
+
   function makeDraggable() {
-    let startX = 0, startY = 0, originX = 0, originY = 0, dragging = false;
     el.head.addEventListener("mousedown", (e) => {
       if (e.target.closest(".icon-btn")) return;
       dragging = true;
@@ -261,8 +285,10 @@
       originX = rect.left; originY = rect.top;
       e.preventDefault();
     });
+    if (windowDragWired) return;
+    windowDragWired = true;
     window.addEventListener("mousemove", (e) => {
-      if (!dragging) return;
+      if (!dragging || !el.panel) return;
       const x = Math.max(4, Math.min(window.innerWidth - 60, originX + e.clientX - startX));
       const y = Math.max(4, Math.min(window.innerHeight - 40, originY + e.clientY - startY));
       el.panel.style.left = `${x}px`;
@@ -274,8 +300,16 @@
   }
 
   TA.widget = {
+    /**
+     * Show the panel and wire its buttons. Idempotent: returns true only when
+     * a panel was actually built and wired by this call, so the caller does
+     * its one-time work (the backend ping) once per panel, not once per DOM
+     * mutation.
+     */
     mount(handlers) {
       build();
+      if (wired) return false;
+      wired = true;
       el.fill.addEventListener("click", handlers.onFill);
       if (handlers.onFillSection) {
         el.fillSection.addEventListener("click", handlers.onFillSection);
@@ -283,7 +317,12 @@
       el.refill.addEventListener("click", handlers.onRefill);
       el.applied.addEventListener("click", handlers.onApplied);
       this.onTodoClick = handlers.onTodoClick;
+      onClose = handlers.onClose || null;
+      return true;
     },
+
+    /** Escape page- or server-derived text before it reaches `message`. */
+    escape: (text) => escapeHtml(text == null ? "" : text),
 
     isMounted: () => !!host && host.isConnected,
 

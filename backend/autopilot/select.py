@@ -74,48 +74,97 @@ KNOWN = {
 }
 
 # Names that mark an employer as an intermediary rather than the employer.
+# These exclude whatever else the name says. Stems ("consultanc", "recruit",
+# "outsourc") match at a word start; everything else is a whole word, so
+# "atos" no longer excludes Kratos.
+EXCLUDED_STEMS = ("staffing", "consultanc", "recruit", "manpower", "placement",
+                  "resourcing", "outsourc")
 EXCLUDED_MARKERS = (
-    "staffing", "consultanc", "consulting services", "recruit", "hr solutions",
-    "manpower", "placement", "talent solutions", "hiring", "resourcing",
-    "outsourc", "services pvt", "technologies pvt ltd", "solutions pvt",
-    "infotech", "infosys", "wipro", "cognizant", "capgemini", "accenture",
-    "tech mahindra", "hcl", "ltimindtree", "mindtree", "mphasis", "zensar",
+    "consulting services", "hr solutions", "talent solutions",
+    "infosys", "wipro", "cognizant", "capgemini", "accenture",
+    "tech mahindra", "hcl", "hcltech", "ltimindtree", "mindtree", "mphasis", "zensar",
     "ntt data", "birlasoft", "coforge", "hexaware", "persistent systems",
     "cgi", "dxc", "atos", "virtusa", "syntel", "iGate", "quess", "randstad",
     "adecco", "teamlease", "huntingcube", "crescendo", "antal", "michael page",
 )
+# Legal-entity boilerplate that body shops happen to use, and so do the Indian
+# subsidiaries of the companies we want: "Goldman Sachs Services Pvt Ltd",
+# "Swiggy - Bundl Technologies Pvt Ltd", "Amazon Hiring". These exclude only a
+# name that matched no tier.
+GENERIC_EXCLUDED_MARKERS = ("hiring", "services pvt", "technologies pvt ltd",
+                            "solutions pvt", "infotech")
+
+# Tier names that are also ordinary words ("Square Yards", "Notion Press",
+# "Target"), accepted only as the whole name — after legal suffixes are
+# stripped — or as one whole part of it ("Dreamplug Technologies (CRED)").
+AMBIGUOUS_NAMES = {
+    "square", "block", "notion", "elastic", "discord", "plaid", "target",
+    "booking", "visa", "millennium", "turing", "chime", "harness", "ripple",
+    "affirm", "sigmoid", "amplitude", "cred",
+}
+
+_SUFFIX_RE = re.compile(
+    r"\b(pvt|private|ltd|limited|inc|llc|llp|corp|corporation|co|company|plc|nv|"
+    r"gmbh|ag|bv|pte|holdings|group|com|technologies|technology|labs|india|"
+    r"software|systems|solutions)\b"
+)
+
+
+def _clean(name: str) -> str:
+    """Lowercase, punctuation to spaces, initialisms joined: "D. E. Shaw" -> "de shaw"."""
+    text = (name or "").lower().replace("&", " and ")
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    # Runs of single letters are an initialism split by the dots just removed.
+    text = re.sub(r"\b[a-z](?: [a-z]\b)+", lambda m: m.group(0).replace(" ", ""), text)
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def _norm(name: str) -> str:
-    text = (name or "").lower().strip()
-    text = re.sub(r"\b(pvt|private|ltd|limited|inc|llc|corp|corporation|technologies|"
-                  r"technology|labs|india|software|systems|solutions)\b", " ", text)
-    return re.sub(r"[^a-z0-9. ]+", " ", text).strip()
+    return re.sub(r"\s+", " ", _SUFFIX_RE.sub(" ", _clean(name))).strip()
+
+
+def _has_word(text: str, word: str) -> bool:
+    return bool(re.search(rf"(?<![a-z0-9]){re.escape(word)}(?![a-z0-9])", text))
+
+
+def _prep(names: Iterable[str]) -> List[str]:
+    """Normalize a name list the same way company names are, at load."""
+    return sorted({_norm(n) for n in names if _norm(n)})
+
+
+_FAANG, _ELITE, _STRONG, _KNOWN = (_prep(s) for s in (FAANG, ELITE, STRONG, KNOWN))
+_AMBIGUOUS = set(_prep(AMBIGUOUS_NAMES))
+_EXCLUDED_STEMS = tuple(_clean(m) for m in EXCLUDED_STEMS)
+_EXCLUDED_MARKERS = tuple(_clean(m) for m in EXCLUDED_MARKERS)
+_GENERIC_EXCLUDED = tuple(_clean(m) for m in GENERIC_EXCLUDED_MARKERS)
 
 
 def _in_set(name: str, names: Iterable[str]) -> bool:
     """Whole-name or whole-word containment, never a loose substring."""
     clean = _norm(name)
+    parts = {_norm(p) for p in re.split(r"[-–—|/(),]", name or "")}
     for candidate in names:
-        if clean == candidate:
+        if clean == candidate or candidate in parts:
             return True
-        if re.search(rf"(?<![a-z0-9]){re.escape(candidate)}(?![a-z0-9])", clean):
+        if candidate in _AMBIGUOUS:
+            continue
+        if _has_word(clean, candidate):
             return True
     return False
 
 
 def company_tier(company: str) -> Tier:
-    raw = (company or "").lower()
-    if any(marker in raw for marker in EXCLUDED_MARKERS):
+    raw = _clean(company)
+    if any(re.search(rf"(?<![a-z0-9]){re.escape(s)}", raw) for s in _EXCLUDED_STEMS):
         return Tier.EXCLUDED
-    if _in_set(company, FAANG):
-        return Tier.FAANG
-    if _in_set(company, ELITE):
-        return Tier.ELITE
-    if _in_set(company, STRONG):
-        return Tier.STRONG
-    if _in_set(company, KNOWN):
-        return Tier.KNOWN
+    if any(_has_word(raw, m) for m in _EXCLUDED_MARKERS):
+        return Tier.EXCLUDED
+    for tier, names in ((Tier.FAANG, _FAANG), (Tier.ELITE, _ELITE),
+                        (Tier.STRONG, _STRONG), (Tier.KNOWN, _KNOWN)):
+        if _in_set(company, names):
+            return tier
+    if any(_has_word(raw, m) for m in _GENERIC_EXCLUDED):
+        return Tier.EXCLUDED
     return Tier.UNKNOWN
 
 
@@ -125,10 +174,28 @@ ROLE_STRONG = ("backend", "back end", "software engineer", "software development
                "sde", "full stack", "fullstack", "platform engineer", "distributed systems",
                "infrastructure engineer", "systems engineer", "server")
 ROLE_OK = ("software", "engineer", "developer", "programmer")
-ROLE_BAD = ("frontend only", "ui/ux", "designer", "qa ", "test engineer", "sdet",
-            "support", "sales", "marketing", "recruiter", "hr ", "intern",
-            "data entry", "analyst", "manager", "director", "principal", "staff ",
-            "senior staff", "lead ", "architect", "head of", "vp ")
+# Whole words (see `_bad_role`). As bare substrings "intern" zeroed "Internal
+# Tools", "International Payments" and "Internet Infrastructure", and "sales"
+# zeroed "Salesforce Platform".
+ROLE_BAD = ("frontend only", "ui/ux", "designer", "qa", "test engineer", "sdet",
+            "recruiter", "intern", "interns", "internship",
+            "data entry", "analyst", "manager", "director", "principal", "staff",
+            "senior staff", "lead", "architect", "head of", "vp")
+# Functions that disqualify a title only when it is not also plainly a
+# software-engineering title: "Sales Engineer" and "Technical Support
+# Engineer" are out, "Software Engineer, Customer Support Platform" is in.
+ROLE_BAD_UNLESS_SWE = ("support", "sales", "marketing", "hr")
+SWE_TITLES = ("software engineer", "software development engineer", "software developer",
+              "backend engineer", "backend developer", "sde", "full stack engineer",
+              "full stack developer", "platform engineer")
+
+
+def _bad_role(t: str) -> bool:
+    if any(_has_word(t, bad) for bad in ROLE_BAD):
+        return True
+    if any(_has_word(t, bad) for bad in ROLE_BAD_UNLESS_SWE):
+        return not any(_has_word(t, swe) for swe in SWE_TITLES)
+    return False
 
 # "ii" belongs here with "iii" and "iv": `filter_utils` already rejects a
 # "Software Engineer II" title outright, so a job carrying one into selection
@@ -139,7 +206,7 @@ SENIOR_MARKERS = ("senior", "sr.", "sr ", "staff", "principal", "lead", "manager
 
 def role_score(title: str) -> float:
     t = (title or "").lower()
-    if any(bad in t for bad in ROLE_BAD):
+    if _bad_role(t):
         return 0.0
     if any(s in t for s in ROLE_STRONG):
         base = 30.0

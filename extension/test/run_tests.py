@@ -29,6 +29,9 @@ EXT = ROOT / "extension"
 sys.path.insert(0, str(ROOT))
 
 PORT = 8765
+# The API refuses any Host that is not localhost (DNS-rebinding guard in
+# backend/api/main.py), and TestClient's default host is "testserver".
+LOCAL_API = "http://localhost:8000"
 failures: list[str] = []
 
 
@@ -49,7 +52,7 @@ async def run_unit() -> None:
 
     from backend.api.main import app
 
-    client = TestClient(app)
+    client = TestClient(app, base_url=LOCAL_API)
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
@@ -158,7 +161,7 @@ async def run_sections() -> None:
 
     from backend.api.main import app
 
-    client = TestClient(app)
+    client = TestClient(app, base_url=LOCAL_API)
     url = "https://acme.wd5.myworkdayjobs.com/en-US/careers/job/Backend-Engineer_R-1/apply"
 
     async with async_playwright() as p:
@@ -285,7 +288,7 @@ async def run_unknown_containers() -> None:
 
     from backend.api.main import app
 
-    client = TestClient(app)
+    client = TestClient(app, base_url=LOCAL_API)
     print("\nRepeating entries when the container ids are unknown")
 
     async with async_playwright() as p:
@@ -311,6 +314,26 @@ async def run_unknown_containers() -> None:
               (tagged("Company", 1) or {}).get("section_kind"), "experience")
         check("URL tagged as website", (tagged("URL", 1) or {}).get("section_kind"), "website")
         check("second URL is entry 2", bool(tagged("URL", 2)), True)
+
+        # "Fill a section" on employer 2's block. Numbered inside the block
+        # alone it came back as entry 1 and was overwritten with employer 1.
+        scoped = await page.evaluate(
+            """() => window.__TA.scrape(document.querySelector('[data-automation-id="panelSet-abc-2"]'))
+                        .fields.map(f => ({ label: f.label, kind: f.section_kind, index: f.section_index,
+                                            idx: f.idx, tag: f.tag, type: f.type }))"""
+        )
+        check("section run holds only its block", len(scoped), 3)
+        check("section run: Company is entry 2",
+              next((f["index"] for f in scoped if f["label"] == "Company"), None), 2)
+        section_fill = client.post("/api/autofill/resolve", json={
+            "url": "https://acme.wd5.myworkdayjobs.com/x/apply", "page_title": "My Experience",
+            "overwrite": True,
+            "fields": [{"idx": f["idx"], "label": f["label"], "tag": f["tag"], "type": f["type"],
+                        "section_kind": f["kind"], "section_index": f["index"]} for f in scoped],
+        }).json()
+        company_idx = next(f["idx"] for f in scoped if f["label"] == "Company")
+        check("section run writes employer 2",
+              next((f["value"] for f in section_fill["fills"] if f["idx"] == company_idx), ""), "Denr")
 
         data = client.post("/api/autofill/resolve", json={
             "url": "https://acme.wd5.myworkdayjobs.com/x/apply",
@@ -346,7 +369,7 @@ async def run_tenant_variations() -> None:
 
     from backend.api.main import app
 
-    client = TestClient(app)
+    client = TestClient(app, base_url=LOCAL_API)
     print("\nTenant variations — device type, phone format, named links, split dates")
 
     def resolve(fields, url="https://acme.wd5.myworkdayjobs.com/x/apply"):
@@ -855,8 +878,18 @@ async def run_legal_questions() -> None:
         ("Do you require any accommodation during the interview process?", "No"),
         ("What are your total years of professional experience?", "2"),
     ]
-    for label, want in cases:
-        check(label[:26], resolve_value(bare, label), want)
+    # These questions name no country: they mean the job's. An application to
+    # an India-located job answers them; an unknown page leaves them blank.
+    from backend.applier.fields import JOB_LOCATION
+
+    token = JOB_LOCATION.set("Bengaluru, Karnataka")
+    try:
+        for label, want in cases:
+            check(label[:26], resolve_value(bare, label), want)
+    finally:
+        JOB_LOCATION.reset(token)
+    check("no job known -> blank",
+          resolve_value(bare, "Will you now or in future require a sponsorship?"), "")
 
     # The precedence bug: a noun alias inside a yes/no question used to win.
     check("legal question is not an address",
@@ -873,6 +906,773 @@ async def run_legal_questions() -> None:
     check("email", resolve_value(profile, "Email Address"), "@")
     check("expected ctc", resolve_value(profile, "Expected CTC"), "2100000")
     check("linkedin", resolve_value(profile, "LinkedIn Profile"), "linkedin.com")
+
+
+# ── Regressions: option matching, commit evidence, React state, orchestration ─
+#
+# Each fixture below was written to fail against the code it guards: revert
+# the behaviour named in the check and it goes red. A check that passes both
+# ways has not tested anything.
+
+# A generic listbox (Workday selectWidget / any role=option menu) and a native
+# <select>, both offering the sponsorship pair whose "Yes" row contains "now".
+SPONSOR_LISTBOX_HTML = """
+<!doctype html><meta charset="utf-8"><body>
+  <div class="field">
+    <label id="sp-l">Will you now or in the future require sponsorship?</label>
+    <button type="button" id="sp" aria-haspopup="listbox" aria-labelledby="sp-l"
+      data-options="Yes, I will now or in the future require sponsorship|No, I will not require sponsorship">Select One</button>
+  </div>
+  <div class="field">
+    <label for="sp-sel">Sponsorship</label>
+    <select id="sp-sel">
+      <option value="">Select...</option>
+      <option value="y">Yes, I will now or in the future require sponsorship</option>
+      <option value="n">No, I will not require sponsorship</option>
+    </select>
+  </div>
+  <script>
+    var openList = null;
+    function closeList() { if (openList) { openList.remove(); openList = null; } }
+    document.querySelectorAll('[data-options]').forEach(function (t) {
+      t.addEventListener('click', function () {
+        closeList();
+        var list = document.createElement('div');
+        list.setAttribute('role', 'listbox');
+        t.dataset.options.split('|').forEach(function (text) {
+          var o = document.createElement('div');
+          o.setAttribute('role', 'option');
+          o.textContent = text;
+          o.addEventListener('click', function () { t.textContent = text; closeList(); });
+          list.appendChild(o);
+        });
+        document.body.appendChild(list);
+        openList = list;
+      });
+    });
+    document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeList(); });
+  </script>
+</body>
+"""
+
+# react-select as it behaves on a value its menu does not hold: the menu keeps
+# showing a row anyway ("Other"), and Enter commits whichever row is
+# highlighted. `data-multi` makes it a tag picker whose commits are chips.
+REACT_SELECT_HTML = """
+<!doctype html><meta charset="utf-8"><body>
+  <div class="field">
+    <label id="rs-l">%s</label>
+    <div class="select__control" role="combobox" id="rs" aria-labelledby="rs-l" %s>
+      <span class="val">Select...</span><span class="tags"></span>
+      <input class="rs-in" role="combobox">
+    </div>
+  </div>
+  <script>
+    var ctl = document.getElementById('rs');
+    var openList = null;
+    window.__committed = [];
+    function closeList() { if (openList) { openList.remove(); openList = null; } }
+    function commit(text) {
+      if (ctl.hasAttribute('data-multi')) {
+        var c = document.createElement('span');
+        c.setAttribute('data-automation-id', 'selectedItem');
+        c.textContent = text;
+        ctl.querySelector('.tags').appendChild(c);
+      } else {
+        ctl.querySelector('.val').textContent = text;
+      }
+      window.__committed.push(text);
+      closeList();
+    }
+    function open() {
+      if (openList) return;
+      var list = document.createElement('div');
+      list.setAttribute('role', 'listbox');
+      var o = document.createElement('div');
+      o.setAttribute('role', 'option');
+      o.textContent = 'Other';
+      o.addEventListener('mousedown', function (e) { e.preventDefault(); });
+      o.addEventListener('click', function () { commit('Other'); });
+      list.appendChild(o);
+      document.body.appendChild(list);
+      openList = list;
+    }
+    ctl.addEventListener('click', open);
+    var inp = ctl.querySelector('.rs-in');
+    inp.addEventListener('input', open);
+    inp.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' && openList) commit(openList.querySelector('[role=option]').textContent);
+    });
+    document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeList(); });
+  </script>
+</body>
+"""
+
+
+async def run_chip_count() -> None:
+    """An empty chip container is not a chip — the selectedItemList bug's twin."""
+    from playwright.async_api import async_playwright
+
+    print("\nChip count — containers and empty shells are not values")
+    html = """
+      <div data-automation-id="formField-skills">
+        <input id="empty" data-automation-id="searchBox">
+        <div class="chips-container"></div>
+      </div>
+      <div data-automation-id="formField-langs">
+        <input id="one" data-automation-id="searchBox">
+        <div class="chips-container"><span class="chip">Java</span></div>
+      </div>"""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        page = await browser.new_page()
+        await page.set_content(html)
+        await page.add_script_tag(path=str(EXT / "src" / "scrape.js"))
+        await page.add_script_tag(path=str(EXT / "src" / "fill.js"))
+        counts = await page.evaluate(
+            """() => ({
+                 empty: window.__TA.chipCount(document.getElementById('empty')),
+                 one: window.__TA.chipCount(document.getElementById('one')),
+               })"""
+        )
+        check("empty chip container counts 0", counts["empty"], 0)
+        check("one chip counts 1", counts["one"], 1)
+        await browser.close()
+
+
+async def run_option_matching() -> None:
+    """Fixes 1 and 10: whole-word matching, and no commit without a match."""
+    from playwright.async_api import async_playwright
+
+    print("\nOption matching — whole words, polarity, no lone-row commits")
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        page = await browser.new_page()
+        errors: list[str] = []
+        page.on("pageerror", lambda e: errors.append(str(e)))
+
+        async def load(html):
+            await page.set_content(html)
+            await page.add_script_tag(path=str(EXT / "src" / "scrape.js"))
+            await page.add_script_tag(path=str(EXT / "src" / "fill.js"))
+
+        await load(SPONSOR_LISTBOX_HTML)
+        unit = await page.evaluate(
+            """() => {
+                 const b = window.__TA.bestOptionIndex;
+                 return {
+                   no: b(['Yes, I will now or in the future require sponsorship',
+                          'No, I will not require sponsorship'], 'No'),
+                   yes: b(['No, I will not', 'Yes, I will'], 'Yes'),
+                   c: b(['C#', 'CSS', 'Cloud', 'Objective-C', 'C++'], 'C'),
+                   cExact: b(['C#', 'C', 'CSS'], 'C'),
+                   phone: b(['British Indian Ocean Territory (+246)', 'India (+91)'], '+91'),
+                   transient: b(['No results found'], 'No'),
+                   polarity: b(['Not a protected veteran'], 'Protected veteran'),
+                   none: b(['None of the above'], 'No'),
+                 };
+               }"""
+        )
+        check("No picks 'No, I will not'", unit["no"], 1)
+        check("Yes picks 'Yes, I will'", unit["yes"], 1)
+        check("C matches none of C#/CSS/…", unit["c"], -1)
+        check("C still matches C", unit["cExact"], 1)
+        check("+91 matches India (+91)", unit["phone"], 1)
+        check("No never picks 'No results'", unit["transient"], -1)
+        check("negated option rejected", unit["polarity"], -1)
+        check("No does not match None", unit["none"], -1)
+
+        out = await page.evaluate(
+            """async () => {
+                 const S = window.__TA.scrape();
+                 const idx = (id) => [...S.elements].find(([, e]) => e.id === id)[0];
+                 const res = await window.__TA.applyFills([
+                   { idx: idx('sp'), action: 'combobox', value: 'No', values: ['No'], label: 'sponsor' },
+                   { idx: idx('sp-sel'), action: 'select', value: 'No', label: 'sponsor native' },
+                 ], S.elements, null);
+                 const sel = document.getElementById('sp-sel');
+                 return {
+                   combo: document.getElementById('sp').textContent.trim(),
+                   native: sel.options[sel.selectedIndex].text,
+                   applied: res.applied.length,
+                 };
+               }"""
+        )
+        # Reverting to substring matching clicks the "Yes, I will now…" row.
+        check("listbox sponsorship = No", out["combo"].startswith("No, I will not"), True)
+        check("native sponsorship = No", out["native"].startswith("No, I will not"), True)
+        check("both applied", out["applied"], 2)
+
+        # Fix 10: a single-value picker whose menu holds a different answer.
+        await load(REACT_SELECT_HTML % ("How did you hear about us?", ""))
+        combo = await page.evaluate(
+            """async () => {
+                 const S = window.__TA.scrape();
+                 const idx = [...S.elements].find(([, e]) => e.id === 'rs')[0];
+                 const res = await window.__TA.applyFills([
+                   { idx, action: 'combobox', value: 'Company Website',
+                     values: ['Company Website'], label: 'source' },
+                 ], S.elements, null);
+                 return { committed: window.__committed, failed: res.failed.length };
+               }"""
+        )
+        # Reverting the settled lone-row click commits "Other".
+        check("lone 'Other' row not clicked", combo["committed"], [])
+        check("mismatch reported failed", combo["failed"], 1)
+
+        # Fix 10: a tag picker — Enter would commit the highlighted "Other".
+        await load(REACT_SELECT_HTML % ("Skills", "data-multi"))
+        multi = await page.evaluate(
+            """async () => {
+                 const S = window.__TA.scrape();
+                 const idx = [...S.elements].find(([, e]) => e.id === 'rs')[0];
+                 const res = await window.__TA.applyFills([
+                   { idx, action: 'multiselect', value: 'Kotlin', values: ['Kotlin'], label: 'Skills' },
+                 ], S.elements, null);
+                 return { committed: window.__committed, failed: res.failed.length };
+               }"""
+        )
+        # Reverting the Enter guard lets react-select commit its first row.
+        check("Enter did not commit 'Other'", multi["committed"], [])
+        check("unheld skill reported failed", multi["failed"], 1)
+        check("no page errors", errors, [])
+
+        await browser.close()
+
+
+# A React-controlled Workday prompt whose Tab keydown either opens this
+# widget's own popup a beat later (mode "owned") or opens nothing, while some
+# other widget's popup is already up (mode "unowned").
+WORKDAY_PROMPT_EVIDENCE_HTML = """
+<!doctype html><meta charset="utf-8"><body>
+  <div data-automation-id="formField-skills">
+    <label id="sk-label">Skills</label>
+    <div id="skillsWidget" data-automation-id="multiSelectContainer"
+         role="combobox" aria-labelledby="sk-label">
+      <ul data-automation-id="selectedItemList"></ul>
+      <input id="sk">
+    </div>
+  </div>
+  <script>
+    var list = document.querySelector('[data-automation-id="selectedItemList"]');
+    window.__clicked = [];
+    window.__mode = 'owned';
+    window.__rows = [];
+    function killPopups() {
+      document.querySelectorAll('[data-automation-widget="wd-popup"]').forEach(function (p) { p.remove(); });
+    }
+    window.openPopup = function (rows, owner) {
+      var pop = document.createElement('div');
+      pop.setAttribute('data-automation-widget', 'wd-popup');
+      pop.setAttribute('data-associated-widget', owner);
+      rows.forEach(function (text) {
+        var row = document.createElement('div');
+        row.setAttribute('data-automation-id', 'promptOption');
+        row.textContent = text;
+        row.addEventListener('click', function () {
+          window.__clicked.push(owner + ':' + text);
+          if (owner === 'skillsWidget') {
+            var li = document.createElement('li');
+            li.textContent = text;
+            list.appendChild(li);
+          }
+          // Either way the menu closes, which is all the old check looked at.
+          killPopups();
+        });
+        pop.appendChild(row);
+      });
+      document.body.appendChild(pop);
+    };
+    window.killPopups = killPopups;
+    document.getElementById('sk')['__reactProps$tempoapply'] = {
+      onKeyDown: function (e) {
+        if (!e || e.key !== 'Tab') return;
+        if (window.__mode === 'owned') {
+          setTimeout(function () { window.openPopup(window.__rows, 'skillsWidget'); }, 300);
+        }
+      }
+    };
+  </script>
+</body>
+"""
+
+
+async def run_workday_prompt_evidence() -> None:
+    """Fixes 1 and 2 on the React prompt path: whole tokens, and evidence tied to the widget."""
+    from playwright.async_api import async_playwright
+
+    print("\nWorkday prompt — whole-token rows, success read off this widget")
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        page = await browser.new_page()
+        errors: list[str] = []
+        page.on("pageerror", lambda e: errors.append(str(e)))
+        await page.set_content(WORKDAY_PROMPT_EVIDENCE_HTML)
+        await page.add_script_tag(path=str(EXT / "src" / "scrape.js"))
+        await page.add_script_tag(path=str(EXT / "src" / "fill.js"))
+
+        run = """async ([mode, rows, decoy, value]) => {
+                   window.killPopups();
+                   window.__clicked = [];
+                   document.querySelector('[data-automation-id="selectedItemList"]').innerHTML = '';
+                   window.__mode = mode;
+                   window.__rows = rows;
+                   if (decoy) window.openPopup(decoy, 'someOtherWidget');
+                   const S = window.__TA.scrape();
+                   const f = S.fields.find(x => (x.label || '').toLowerCase().includes('skill'));
+                   const res = await window.__TA.applyFills(
+                     [{ idx: f.idx, action: 'multiselect', value, values: [value], label: 'Skills' }],
+                     S.elements, null);
+                   return {
+                     chips: [...document.querySelectorAll('[data-automation-id="selectedItemList"] > li')]
+                              .map(li => li.textContent),
+                     clicked: window.__clicked,
+                     applied: res.applied.length,
+                     failed: res.failed.length,
+                   };
+                 }"""
+
+        # Skill "C" against a taxonomy holding only C#, CSS, Cloud Computing.
+        c = await page.evaluate(run, ["owned", ["C#", "CSS", "Cloud Computing"], None, "C"])
+        check("skill C did not commit C#", c["chips"], [])
+        check("skill C reported failed", c["failed"], 1)
+
+        # This widget opens nothing; another widget's menu offers "Java".
+        # Clicking there closes a popup, which the old check read as success.
+        wrong = await page.evaluate(run, ["unowned", [], ["Java"], "Java"])
+        check("other popup's row is no success", wrong["applied"], 0)
+        check("reported failed, not green", wrong["failed"], 1)
+
+        # An unowned popup's row is only ever clicked on an exact match.
+        near = await page.evaluate(run, ["unowned", [], ["JavaScript"], "Java"])
+        check("unowned near-miss not clicked", near["clicked"], [])
+
+        # And the happy path still commits through its own popup.
+        ok = await page.evaluate(run, ["owned", ["Java EE", "Java", "JavaScript"], ["Java"], "Java"])
+        check("owned exact row committed", ok["chips"], ["Java"])
+        check("owned commit applied", ok["applied"], 1)
+        check("no page errors", errors, [])
+
+        await browser.close()
+
+
+# React-owned controls that revert what they did not set.
+REACT_STATE_HTML = """
+<!doctype html><meta charset="utf-8"><body>
+  <div class="field"><input type="radio" id="r-never" name="rn" value="yes"><label for="r-never">Yes</label></div>
+  <div class="field"><input type="radio" id="r-late" name="rl" value="yes"><label for="r-late">Yes</label></div>
+  <div data-automation-id="formField-from">
+    <input id="m-rev" aria-label="Month" data-committed="">
+  </div>
+  <script>
+    // Never accepts: the click is cancelled, and a hand-set checked state is
+    // reverted on the next tick, as React does on its next render.
+    var never = document.getElementById('r-never');
+    never.addEventListener('click', function (e) { e.preventDefault(); });
+    never.addEventListener('change', function () { setTimeout(function () { never.checked = false; }, 0); });
+    // Accepts, a tick late.
+    var late = document.getElementById('r-late');
+    late.addEventListener('click', function (e) {
+      e.preventDefault();
+      setTimeout(function () { late.checked = true; late.setAttribute('aria-checked', 'true'); }, 250);
+    });
+    // A date part that reverts any value it did not set itself, and ignores
+    // ArrowUp: nothing written here survives.
+    var m = document.getElementById('m-rev');
+    m.addEventListener('input', function () { setTimeout(function () { m.value = m.dataset.committed; }, 30); });
+  </script>
+</body>
+"""
+
+
+async def run_react_state() -> None:
+    """Fixes 5 and 6: a radio or date part only counts once React keeps it."""
+    from playwright.async_api import async_playwright
+
+    print("\nReact-owned state — radios and date parts must hold")
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        page = await browser.new_page()
+        errors: list[str] = []
+        page.on("pageerror", lambda e: errors.append(str(e)))
+        await page.set_content(REACT_STATE_HTML)
+        await page.add_script_tag(path=str(EXT / "src" / "scrape.js"))
+        await page.add_script_tag(path=str(EXT / "src" / "fill.js"))
+
+        out = await page.evaluate(
+            """async () => {
+                 const S = window.__TA.scrape();
+                 const idx = (id) => [...S.elements].find(([, e]) => e.id === id)[0];
+                 const one = async (fill) => {
+                   const r = await window.__TA.applyFills([fill], S.elements, null);
+                   return r.applied.length === 1;
+                 };
+                 const never = await one({ idx: idx('r-never'), action: 'radio', value: 'Yes', label: 'never' });
+                 const late = await one({ idx: idx('r-late'), action: 'radio', value: 'Yes', label: 'late' });
+                 const month = await one({ idx: idx('m-rev'), action: 'text', value: '01', label: 'From Month' });
+                 await new Promise(r => setTimeout(r, 100));
+                 return {
+                   never, late, month,
+                   neverChecked: document.getElementById('r-never').checked,
+                   lateChecked: document.getElementById('r-late').checked,
+                   monthValue: document.getElementById('m-rev').value,
+                 };
+               }"""
+        )
+        # Reverting to `el.checked = true` reports the never-accepting radio applied.
+        check("reverted radio reported failed", out["never"], False)
+        check("reverted radio really unticked", out["neverChecked"], False)
+        check("late radio waited for", out["late"], True)
+        check("late radio ticked", out["lateChecked"], True)
+        # Reverting to an immediate read-back reports the reverted month applied.
+        check("reverted date part failed", out["month"], False)
+        check("reverted date part is empty", out["monthValue"], "")
+        check("no page errors", errors, [])
+
+        await browser.close()
+
+
+NAMELESS_RADIOS_HTML = """
+<!doctype html><meta charset="utf-8"><body>
+  <fieldset>
+    <legend>Have you ever been employed by this company?</legend>
+    <label><input type="radio" required> Yes</label>
+    <label><input type="radio" required> No</label>
+  </fieldset>
+  <fieldset>
+    <legend>Are you willing to relocate to Bengaluru?</legend>
+    <label><input type="radio" required> Yes</label>
+    <label><input type="radio" required> No</label>
+  </fieldset>
+</body>
+"""
+
+
+async def run_nameless_radios() -> None:
+    """Fix 4: radios with no name are grouped by their question, and never answered blindly."""
+    from fastapi.testclient import TestClient
+    from playwright.async_api import async_playwright
+
+    from backend.api.main import app
+
+    client = TestClient(app, base_url=LOCAL_API)
+    url = "https://acme.wd5.myworkdayjobs.com/x/apply"
+    print("\nNameless radios — grouped by question, own label must be the answer")
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        page = await browser.new_page()
+        await page.set_content(NAMELESS_RADIOS_HTML)
+        await page.add_script_tag(path=str(EXT / "src" / "scrape.js"))
+        fields = await page.evaluate("() => window.__TA.scrape().fields")
+        await browser.close()
+
+    radios = [f for f in fields if f["type"] == "radio"]
+    keys = [f.get("group_key", "") for f in radios]
+    check("four nameless radios scraped", len(radios), 4)
+    check("same question shares a key", bool(keys[0]) and keys[0] == keys[1], True)
+    check("different questions differ", keys[0] != keys[2] and keys[2] == keys[3], True)
+
+    data = client.post("/api/autofill/resolve", json={
+        "url": url, "page_title": "Application", "fields": fields,
+    }).json()
+    fills = [f for f in data["fills"] if f["action"] == "radio"]
+    chosen = {f["label"]: next(r["option_label"] for r in radios if r["idx"] == f["idx"]) for f in fills}
+    check("one fill per question", len(fills), 2)
+    check("employed-here radio = No",
+          chosen.get("Have you ever been employed by this company?"), "No")
+    check("relocate radio = Yes", chosen.get("Are you willing to relocate to Bengaluru?"), "Yes")
+    # With radios grouped one-by-one, the unanswered sibling of an answered
+    # question still reported that question as needing the human.
+    check("answered question not flagged",
+          any("employed" in u for u in data["unresolved"]), False)
+
+    # A radio that stands alone is only clicked when its own label is the answer.
+    lone = client.post("/api/autofill/resolve", json={
+        "url": url, "page_title": "Application", "fields": [{
+            "idx": "9", "tag": "input", "type": "radio",
+            "label": "Have you ever been employed by this company?",
+            "group_label": "Have you ever been employed by this company?",
+            "option_label": "Yes, I am now or was previously employed here",
+        }],
+    }).json()
+    check("lone 'Yes…' radio not clicked for No",
+          [f["idx"] for f in lone["fills"] if f["action"] == "radio"], [])
+
+    # The gate must not depend on pick_option's own behaviour: the version this
+    # was written against returned the sole option of a one-item list whatever
+    # was asked. Stand that in and the radio must still not be clicked.
+    from unittest import mock
+
+    from backend.api import autofill as autofill_api
+    from backend.applier.profile import load_profile
+
+    lone_field = autofill_api.ScrapedField(
+        idx="9", tag="input", type="radio",
+        label="Have you ever been employed by this company?",
+        group_label="Have you ever been employed by this company?",
+        option_label="Yes, I am now or was previously employed here",
+    )
+    with mock.patch.object(autofill_api, "pick_option", lambda options, desired: options[0] if options else None):
+        blind = autofill_api._resolve_radio_group(load_profile(), [lone_field], "", "")
+    check("radio gate ignores a blind pick", [f.idx for f in blind], [])
+
+
+# ── content.js / widget.js with a stubbed chrome.runtime ─────────────────────
+#
+# The real messaging only exists in the integration suite, but the logic that
+# decides when a tally closes, what reaches innerHTML, and whether a panel can
+# come back after a close is all in these two files, so a stub that records
+# what they send is enough to pin it down.
+
+CHROME_STUB_JS = """
+(function () {
+  window.__sent = [];
+  window.__listeners = [];
+  window.__resolveDelay = 0;
+  window.__resolveReply = { ok: true, data: {
+    fills: [], unresolved: [], sections_needed: {}, job_title: '', company: '',
+    ats: 'unknown', known_job: false, has_resume: true } };
+  function reply(msg) {
+    if (msg.type === 'resolve') {
+      return new Promise(function (r) { setTimeout(function () { r(window.__resolveReply); }, window.__resolveDelay); });
+    }
+    if (msg.type === 'ping') return { ok: true, data: { name: 'Test', ready: true, has_resume: true, missing: [] } };
+    return { ok: true };
+  }
+  window.chrome = { runtime: {
+    id: 'test-extension', lastError: undefined,
+    sendMessage: function (msg, cb) {
+      window.__sent.push(msg);
+      Promise.resolve(reply(msg)).then(function (r) { if (cb) cb(r); });
+    },
+    onMessage: { addListener: function (fn) { window.__listeners.push(fn); } },
+  } };
+  window.__deliver = function (msg) {
+    window.__listeners.forEach(function (fn) { fn(msg, {}, function () {}); });
+  };
+  window.__count = function (type) { return window.__sent.filter(function (m) { return m.type === type; }).length; };
+})();
+"""
+
+CONTENT_FORM_HTML = """
+<!doctype html><meta charset="utf-8"><title>Apply</title><body>
+  <form>
+    <label for="e">Email</label><input id="e" type="email" name="email">
+    <label for="a">A</label><input id="a">
+    <label for="b">B</label><input id="b">
+    <label for="c">C</label><input id="c">
+  </form>
+</body>
+"""
+
+
+async def _load_content(frame) -> None:
+    await frame.add_script_tag(content=CHROME_STUB_JS)
+    for name in ("scrape.js", "fill.js", "widget.js", "content.js"):
+        await frame.add_script_tag(path=str(EXT / "src" / name))
+
+
+async def run_widget_lifecycle() -> None:
+    """Fix 8: mount is idempotent, and a closed panel can be shown again."""
+    from playwright.async_api import async_playwright
+
+    print("\nWidget lifecycle — idempotent mount, close then show")
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        page = await browser.new_page()
+        await page.set_content("<!doctype html><body></body>")
+        await page.add_script_tag(path=str(EXT / "src" / "widget.js"))
+        out = await page.evaluate(
+            """() => {
+                 let clicks = 0;
+                 // Fresh closures per mount, exactly as content.js passes them —
+                 // addEventListener would silently dedupe one shared function.
+                 const handlers = () => ({ onFill: () => { clicks += 1; }, onRefill() {}, onApplied() {},
+                                           onTodoClick() {} });
+                 const W = window.__TA.widget;
+                 const first = W.mount(handlers()), second = W.mount(handlers());
+                 W.mount(handlers());
+                 const h = handlers();
+                 const press = (sel) => {
+                   const host = document.getElementById('tempoapply-widget-host');
+                   if (host) host.shadowRoot.querySelector(sel).click();
+                 };
+                 press('[data-fill]');
+                 const afterMounts = clicks;
+                 press('[data-close]');
+                 const closed = W.isMounted();
+                 const again = W.mount(h);
+                 const reopened = W.isMounted();
+                 press('[data-fill]');
+                 return { first, second, afterMounts, closed, again, reopened, total: clicks,
+                          hosts: document.querySelectorAll('#tempoapply-widget-host').length };
+               }"""
+        )
+        # Reverting: three mounts wire three click listeners, and a closed
+        # panel never comes back because `host` is still set.
+        check("first mount wires", out["first"], True)
+        check("second mount is a no-op", out["second"], False)
+        check("one click, one handler run", out["afterMounts"], 1)
+        check("close unmounts", out["closed"], False)
+        check("show after close rebuilds", out["reopened"], True)
+        check("rebuilt panel is wired once", out["total"], 2)
+        check("one panel on the page", out["hosts"], 1)
+        await browser.close()
+
+
+async def run_content_orchestration() -> None:
+    """Fixes 7, 8 and 9 through content.js itself."""
+    from playwright.async_api import async_playwright
+
+    print("\ncontent.js — frame tally, busy frames, escaping, close/show")
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        page = await browser.new_page()
+        errors: list[str] = []
+        page.on("pageerror", lambda e: errors.append(str(e)))
+
+        # ── Top frame ──
+        await page.set_content(CONTENT_FORM_HTML)
+        await _load_content(page)
+        await page.wait_for_timeout(1300)          # watch() -> mount after its quiet spell
+
+        shadow = "document.getElementById('tempoapply-widget-host').shadowRoot"
+        state = await page.evaluate(
+            f"""() => ({{ mounted: window.__TA.widget.isMounted(), pings: window.__count('ping') }})"""
+        )
+        check("panel mounted on its own", state["mounted"], True)
+        check("one ping for one panel", state["pings"], 1)
+
+        # Close, then let the page mutate: the panel stays closed, no re-ping.
+        await page.evaluate(f"() => {shadow}.querySelector('[data-close]').click()")
+        for _ in range(2):
+            await page.evaluate("() => document.body.appendChild(document.createElement('div'))")
+            await page.wait_for_timeout(900)
+        state = await page.evaluate(
+            """() => ({ mounted: window.__TA.widget.isMounted(), pings: window.__count('ping'),
+                        hosts: document.querySelectorAll('#tempoapply-widget-host').length })"""
+        )
+        check("closed panel stays closed", state["mounted"], False)
+        check("no ping per DOM mutation", state["pings"], 1)
+
+        await page.evaluate("() => window.__deliver({ type: 'TA_SHOW' })")
+        await page.wait_for_timeout(200)
+        state = await page.evaluate(
+            """() => ({ mounted: window.__TA.widget.isMounted(), pings: window.__count('ping'),
+                        hosts: document.querySelectorAll('#tempoapply-widget-host').length })"""
+        )
+        # Reverting the host reset: Show after a close does nothing.
+        check("Show brings the panel back", state["mounted"], True)
+        check("still exactly one panel", state["hosts"], 1)
+
+        # Fix 9: a page-controlled label in the failed list is text, not HTML.
+        await page.evaluate(
+            """() => {
+                 window.__resolveReply = { ok: true, data: {
+                   fills: [{ idx: '999', action: 'text', value: 'x',
+                             label: '<img src=x onerror=__xss=1>' }],
+                   unresolved: [], sections_needed: {}, job_title: '', company: '',
+                   ats: 'unknown', known_job: false, has_resume: true } };
+               }"""
+        )
+        await page.evaluate(f"() => {shadow}.querySelector('[data-fill]').click()")
+        await page.wait_for_timeout(1500)
+        msg = await page.evaluate(
+            f"""() => {{ const m = {shadow}.querySelector('[data-msg]');
+                        return {{ text: m.textContent, imgs: m.querySelectorAll('img').length,
+                                  xss: !!window.__xss }}; }}"""
+        )
+        check("failed label shown as text", "<img" in msg["text"], True)
+        check("failed label is not markup", msg["imgs"], 0)
+        check("page label ran no script", msg["xss"], False)
+
+        # Fix 9, backend error path.
+        await page.evaluate(
+            """() => { window.__resolveReply = { ok: false, error: '<img src=x onerror="window.__xss2=1">' }; }"""
+        )
+        await page.evaluate(f"() => {shadow}.querySelector('[data-fill]').click()")
+        await page.wait_for_timeout(900)
+        err = await page.evaluate(
+            f"""() => ({{ imgs: {shadow}.querySelector('[data-msg]').querySelectorAll('img').length,
+                         xss: !!window.__xss2 }})"""
+        )
+        check("backend error is not markup", err["imgs"], 0)
+        check("backend error ran no script", err["xss"], False)
+
+        # Fix 7: a frame that said "starting" and never reports is named.
+        await page.evaluate(
+            """() => {
+                 window.__resolveReply = { ok: true, data: {
+                   fills: [], unresolved: [], sections_needed: {}, job_title: '', company: '',
+                   ats: 'unknown', known_job: false, has_resume: true } };
+                 window.__TA.frameReportCapMs = 1200;
+               }"""
+        )
+        await page.evaluate(f"() => {shadow}.querySelector('[data-fill]').click()")
+        await page.evaluate("() => window.__deliver({ type: 'TA_FRAME_STARTING' })")
+        await page.wait_for_timeout(700)
+        early = await page.evaluate(f"() => {shadow}.querySelector('[data-fill]').disabled")
+        await page.wait_for_timeout(1600)
+        late = await page.evaluate(
+            f"""() => ({{ busy: {shadow}.querySelector('[data-fill]').disabled,
+                         text: {shadow}.querySelector('[data-msg]').textContent }})"""
+        )
+        check("tally waits for the frame", early, True)
+        check("silent frame named, not dropped", "did not report" in late["text"], True)
+        check("tally closed at the cap", late["busy"], False)
+
+        # Fix 7: a stale report from another run is not counted; this run's is.
+        await page.evaluate("() => { window.__TA.frameReportCapMs = 20000; }")
+        await page.evaluate(f"() => {shadow}.querySelector('[data-fill]').click()")
+        await page.evaluate("() => window.__deliver({ type: 'TA_FRAME_STARTING' })")
+        await page.wait_for_timeout(300)
+        await page.evaluate(
+            """() => {
+                 const run = window.__sent.filter(m => m.type === 'broadcast'
+                   && m.message.type === 'TA_RUN_FRAME').pop().message.opts.runId;
+                 window.__deliver({ type: 'TA_REPORT', result: { runId: 'stale', scraped: 9, filled: 9,
+                                    low: 0, failed: 0, unresolved: [] } });
+                 window.__deliver({ type: 'TA_REPORT', result: { runId: run, scraped: 3, filled: 2,
+                                    low: 0, failed: 0, unresolved: [] } });
+               }"""
+        )
+        await page.wait_for_timeout(900)
+        n_ok = await page.evaluate(f"() => {shadow}.querySelector('[data-n-ok]').textContent")
+        check("only this run's report counted", n_ok, "2")
+
+        # ── Child frame: a second run while the first is still filling ──
+        child_src = CONTENT_FORM_HTML.replace('"', "&quot;")
+        await page.set_content(f'<!doctype html><body><iframe id="f" srcdoc="{child_src}"></iframe></body>')
+        await page.wait_for_timeout(300)
+        frame = page.frames[1]
+        await _load_content(frame)
+        child = await frame.evaluate(
+            """async () => {
+                 window.__resolveDelay = 800;
+                 window.__deliver({ type: 'TA_RUN_FRAME', opts: { runId: 'r1' } });
+                 window.__deliver({ type: 'TA_RUN_FRAME', opts: { runId: 'r2' } });
+                 await new Promise(r => setTimeout(r, 1600));
+                 return {
+                   resolves: window.__count('resolve'),
+                   starting: window.__count('starting'),
+                   reports: window.__sent.filter(m => m.type === 'report')
+                              .map(m => `${m.result.runId}:${m.result.busyFrame ? 'busy' : 'done'}`),
+                 };
+               }"""
+        )
+        # Reverting the busy guard starts a second concurrent fill: 2 resolves.
+        check("second run did not start a fill", child["resolves"], 1)
+        check("both runs acked", child["starting"], 2)
+        check("busy frame said so", child["reports"], ["r2:busy", "r1:done"])
+        check("no page errors", errors, [])
+
+        await browser.close()
 
 
 # ── Integration: the real extension in Chrome ────────────────────────────────
@@ -954,7 +1754,45 @@ async def run_integration() -> None:
             httpd.shutdown()
 
 
+# The harness forms stand in for real postings the scanner found, which are
+# India-located. Their URLs are registered as such jobs in a throwaway
+# database, so "Will you require sponsorship?" resolves exactly as it would on
+# a real application — and the suite never reads or writes tempoapply.db.
+HARNESS_JOBS = (
+    ("https://acme.wd5.myworkdayjobs.com/en-US/careers/job/Backend-Engineer_R-1/apply", "Bengaluru, Karnataka"),
+    ("https://acme.wd5.myworkdayjobs.com/x/apply", "Bengaluru, Karnataka"),
+)
+
+
+def install_test_db() -> None:
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    from backend.api.main import app
+    from backend.db.models import Base, Job, get_db
+
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+    with Session() as db:
+        for i, (url, location) in enumerate(HARNESS_JOBS):
+            db.add(Job(id=f"harness-job-{i:04d}", title="Backend Engineer", company="Acme",
+                       platform="test", url=url, location=location, status="discovered"))
+        db.commit()
+
+    def override():
+        db = Session()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    app.dependency_overrides[get_db] = override
+
+
 async def main() -> None:
+    install_test_db()
     await run_unit()
     await run_sections()
     await run_unknown_containers()
@@ -963,6 +1801,13 @@ async def main() -> None:
     await run_enter_commit_and_sections()
     await run_async_prompt()
     await run_workday_react_widgets()
+    await run_option_matching()
+    await run_chip_count()
+    await run_workday_prompt_evidence()
+    await run_react_state()
+    await run_nameless_radios()
+    await run_widget_lifecycle()
+    await run_content_orchestration()
     if "--integration" in sys.argv:
         await run_integration()
 

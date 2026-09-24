@@ -16,6 +16,7 @@ import importlib
 import json
 import pathlib
 import re
+import subprocess
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -374,14 +375,69 @@ def check_scrape_budget() -> None:
         ok("no searches spent on excluded cities")
 
 
+SENSITIVE_PATHS = (
+    "config/.env", "config/.env.example", ".env", "config/workday_accounts.json",
+    "config/applicant_profile.json", "tempoapply.db", "data/browser_state.json",
+)
+# Shapes of real credentials. Printed as file + first three characters only.
+SECRET_PATTERNS = (
+    ("OpenAI key", re.compile(r"\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}")),
+    ("Anthropic key", re.compile(r"\bsk-ant-[A-Za-z0-9_-]{20,}")),
+    ("Google API key", re.compile(r"\bAIza[0-9A-Za-z_-]{30,}")),
+    ("Google AQ key", re.compile(r"\bAQ\.[0-9A-Za-z_-]{30,}")),
+    ("Groq key", re.compile(r"\bgsk_[A-Za-z0-9]{20,}")),
+    ("xAI key", re.compile(r"\bxai-[A-Za-z0-9]{20,}")),
+    # Config files only, and on one line: in code, `password = getpass()` is
+    # an assignment, not a secret, and \s* used to run on into the next key.
+    ("password in a config file", re.compile(r"(?im)^[ 	]*[A-Z_]*PASSWORD[ 	]*[=:][ 	]*[\"']?[^\s#\"']{6,}")),
+)
+CONFIG_SUFFIXES = {"", ".env", ".template", ".txt", ".json", ".yaml", ".yml", ".ini", ".cfg", ".toml", ".md"}
+
+
+def _git(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True)
+
+
 def check_secrets() -> None:
+    """
+    Asks git, not .gitignore. The old check passed whenever a filename appeared
+    in .gitignore — and a tracked file stays tracked whatever .gitignore says,
+    which is how config/applicant_profile.json (phone, address, EEO answers)
+    was committed and pushed.
+    """
     section("Secrets")
-    ignored = (ROOT / ".gitignore").read_text(encoding="utf-8")
-    for path in ("config/.env", "config/workday_accounts.json"):
-        if pathlib.Path(path).name in ignored or path in ignored:
-            ok(f"{path} is gitignored")
+    if _git("rev-parse", "--is-inside-work-tree").returncode != 0:
+        ok("not a git checkout — nothing can be committed")
+        return
+    tracked = set(_git("ls-files").stdout.splitlines())
+    for path in SENSITIVE_PATHS:
+        if path in tracked:
+            bad(f"{path} is TRACKED by git — `git rm --cached {path}`")
+        elif _git("check-ignore", "-q", path).returncode == 0:
+            ok(f"{path} is ignored and untracked")
         else:
-            bad(f"{path} is NOT gitignored")
+            bad(f"{path} is not gitignored")
+
+    leaks = []
+    for rel in sorted(tracked):
+        path = ROOT / rel
+        if path.suffix.lower() in {".png", ".jpg", ".ico", ".pdf", ".woff", ".woff2"} or not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        for name, pattern in SECRET_PATTERNS:
+            if name.startswith("password") and path.suffix.lower() not in CONFIG_SUFFIXES:
+                continue
+            m = pattern.search(text)
+            if m:
+                leaks.append(f"{rel}: {name} ({m.group(0).split('=')[-1].strip()[:3]}…)")
+    if leaks:
+        for leak in leaks:
+            bad(f"secret-shaped string in a tracked file — {leak}")
+    else:
+        ok(f"no secret-shaped strings in {len(tracked)} tracked files")
 
 
 def main() -> None:

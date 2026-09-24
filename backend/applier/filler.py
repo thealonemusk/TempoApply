@@ -29,19 +29,35 @@ COOKIE_NAMES = (
     "Accept all", "Accept All", "Accept cookies", "Accept Cookies",
     "I agree", "Agree", "Got it", "Allow all", "Allow All", "OK", "Okay",
 )
+# "Submit application" used to be in this list, which made the step that opens
+# a form able to send it, blank, before anything was filled.
 APPLY_NAMES = (
     "Apply for this job", "Apply Now", "Apply Manually", "Start application",
-    "I'm interested", "Submit application", "Apply",
+    "I'm interested", "Apply",
 )
 SKIP_APPLY_SUBSTRINGS = (
     "linkedin", "indeed", "google", "facebook", "continue with", "sign in with",
     "easy apply",
 )
 NEXT_NAMES = ("Next", "Continue", "Save and continue", "Save & Continue")
-SUBMIT_NAMES = (
-    "Submit application", "Submit Application", "Send application",
-    "Submit my application", "Submit",
+
+# TempoApply never submits. Filling is automated; the final click is the
+# user's, because a mis-parsed field that reaches an employer cannot be
+# recalled. There is deliberately no submit helper in this module: every
+# button click goes through `click_named_button`, which refuses anything that
+# reads as a submission — role names match as substrings, so "Apply" alone
+# finds "Submit Application".
+_SUBMIT_WORDS_RE = re.compile(
+    r"\b(submit|send (my |your )?application|finish (my |your )?application|"
+    r"complete (my |your )?application|review and submit)\b"
+    # Automation ids run words together: Workday's pageFooterSubmitButton.
+    r"|submit[-_]?button",
+    re.I,
 )
+
+
+def reads_as_submit(text: str) -> bool:
+    return bool(_SUBMIT_WORDS_RE.search(text or ""))
 
 FIELD_JS = """() => {
   const visible = (el) => {
@@ -140,6 +156,9 @@ async def dismiss_overlays(page: Page) -> None:
         loc = page.get_by_role("button", name=name, exact=False)
         try:
             if await loc.count() and await loc.first.is_visible():
+                # "Agree" also finds "I agree — submit my application".
+                if reads_as_submit(await control_text(loc.first)) or await is_submit_control(loc.first):
+                    continue
                 await loc.first.click(timeout=1500)
                 await page.wait_for_timeout(300)
         except Exception:
@@ -459,31 +478,55 @@ async def _committed(scope, selector: str, choice: str) -> bool:
     want = (choice or "").strip().lower()
     core = re.sub(r"[\(\[].*?[\)\]]", " ", want)
     core = re.sub(r"[+\d]+\s*$", " ", core).strip()
-    want = core or want
+    want = " ".join(core.split()) or want
     if not want:
         return False
     try:
+        # Only what the control *displays as its value*: the input's value, a
+        # <select>'s chosen option, a Workday button's text, a react-select
+        # single/multi value, a Workday chip. Never an ancestor's innerText —
+        # that is the question label plus the open menu, so choosing "No" on
+        # "Will you now or in the future require sponsorship?" read back as
+        # committed because "no" is in "now", whatever was selected.
         shown = await _locator(scope, selector).first.evaluate(
             """el => {
-                 const parts = [el.value || ''];
+                 const SHOWN = '[class*="single-value"], [class*="singleValue"], '
+                   + '[class*="multi-value__label"], [class*="multiValue"], '
+                   + '[data-automation-id="selectedItem"]';
+                 const CONTROL = '[role="combobox"], select, button[aria-haspopup="listbox"]';
+                 // An open menu's rows are candidates, not the value.
+                 const inMenu = n => !!n.closest(
+                   '[data-automation-widget="wd-popup"], [class*="__menu"], [class*="-menu"], '
+                   + '[role="listbox"]:not([data-automation-id="selectedItemList"])');
+                 const parts = [];
+                 if (el.tagName === 'SELECT') {
+                   const o = el.selectedOptions && el.selectedOptions[0];
+                   if (o) parts.push(o.textContent || '');
+                 } else if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
+                   parts.push(el.value || '');
+                 } else {
+                   parts.push(el.innerText || '');      // Workday's dropdown button shows its value
+                 }
                  // react-select renders the committed choice in a sibling node,
-                 // never on the input. Walk up past the input's own wrapper —
-                 // el.closest('[class*="select"]') matches the input itself,
-                 // and an <input> has no innerText, so that reads as empty.
+                 // never on the input. Walk up to the nearest display, and stop
+                 // at an ancestor holding another control: its value is not ours.
                  let node = el.parentElement;
                  for (let i = 0; i < 4 && node; i += 1) {
-                   const single = node.querySelector(
-                     '[class*="single-value"], [class*="multi-value"], [class*="selected"]');
-                   if (single) parts.push(single.innerText || '');
-                   if ((node.innerText || '').trim()) parts.push(node.innerText);
+                   const found = [...node.querySelectorAll(SHOWN)].filter(n => !inMenu(n));
+                   if (found.length) { found.forEach(n => parts.push(n.innerText || '')); break; }
+                   const others = [...node.querySelectorAll(CONTROL)]
+                     .filter(c => c !== el && !c.contains(el) && !el.contains(c));
+                   if (others.length) break;
                    node = node.parentElement;
                  }
-                 return parts.join(' ').replace(/\\s+/g, ' ').trim();
+                 return parts.map(s => s.replace(/\\s+/g, ' ').trim().toLowerCase()).filter(Boolean);
                }"""
         )
     except Exception:
         return True          # cannot read it back; trust the click rather than retry blindly
-    return want[:24] in (shown or "").strip().lower()
+    # Whole words: "no" is committed by a value reading "No", not by "Now".
+    pattern = rf"(?<![a-z0-9]){re.escape(want)}(?![a-z0-9])"
+    return any(re.search(pattern, value or "") for value in (shown or []))
 
 
 async def _check_if_needed(scope: Page | FrameLocator, selector: str, label: str, desired: str) -> bool:
@@ -632,6 +675,56 @@ async def fill_form(
     }
 
 
+async def control_text(target) -> str:
+    """
+    Everything a control could be called by. `inner_text` alone is empty for
+    `<input type=submit value="Submit">`, which would sail past the check.
+    """
+    parts = []
+    try:
+        parts.append(await target.inner_text())
+    except Exception:
+        pass
+    for attr in ("value", "aria-label", "title", "data-automation-id"):
+        try:
+            parts.append(await target.get_attribute(attr) or "")
+        except Exception:
+            pass
+    return " ".join(parts).lower()
+
+
+async def is_submit_control(target) -> bool:
+    """
+    A native submit control. "Next" on a single-page form can be one, and
+    clicking it sends the application. Workday's footer buttons are exempt:
+    they are `type=submit` on every step, and its final step has its own
+    automation id, which `control_text` already refuses.
+    """
+    try:
+        auto = (await target.get_attribute("data-automation-id") or "").lower()
+        if auto in {"bottom-navigation-next-button", "pagefooternextbutton"}:
+            return False
+        # A control whose form collects an application — a file upload, an
+        # email box or a free-text answer — sends that application when it is
+        # a submitter, whatever its label says ("Apply", "Continue"). A
+        # <button> with no type attribute inside a form is a submitter.
+        return bool(await target.evaluate(
+            """el => {
+              const tag = el.tagName.toLowerCase();
+              const type = (el.getAttribute('type') || '').toLowerCase();
+              const submits = tag === 'input' ? (type === 'submit' || type === 'image')
+                            : tag === 'button' ? (type === 'submit' || (type === '' && !!el.form))
+                            : false;
+              if (!submits || !el.form) return false;
+              return !!el.form.querySelector(
+                'input[type=file], input[type=email], textarea');
+            }"""
+        ))
+    except Exception:
+        # Unknown is not safe: refuse rather than risk a submission.
+        return True
+
+
 async def click_named_button(scope: Page | FrameLocator, names: tuple, timeout: int = 2500) -> bool:
     for name in names:
         for role in ("button", "link"):
@@ -645,8 +738,11 @@ async def click_named_button(scope: Page | FrameLocator, names: tuple, timeout: 
                 try:
                     if not await target.is_visible():
                         continue
-                    text = (await target.inner_text()).lower()
+                    text = await control_text(target)
                     if any(s in text for s in SKIP_APPLY_SUBSTRINGS):
+                        continue
+                    if reads_as_submit(text) or await is_submit_control(target):
+                        logger.info(f"Refusing to click {text[:60]!r}: it submits the application")
                         continue
                     await target.click(timeout=timeout)
                     return True
@@ -680,20 +776,6 @@ async def click_next(scope: Page | FrameLocator) -> bool:
     except Exception:
         pass
     return await click_named_button(scope, NEXT_NAMES)
-
-
-async def click_submit(scope: Page | FrameLocator) -> bool:
-    wd = _locator(
-        scope,
-        '[data-automation-id="bottom-navigation-submit-button"], [data-automation-id="pageFooterSubmitButton"]',
-    )
-    try:
-        if await wd.count() and await wd.first.is_visible():
-            await wd.first.click(timeout=4000)
-            return True
-    except Exception:
-        pass
-    return await click_named_button(scope, SUBMIT_NAMES, timeout=4000)
 
 
 async def unfilled_required(scope: Page | FrameLocator) -> List[str]:
@@ -833,27 +915,11 @@ async def finish_application(
             filled_info,
         )
 
-    if not auto_submit or not profile.auto_submit:
-        await screenshot_failure(page, log_dir / f"{job_id}-filled.png")
-        return apply_result("needs_review", "Form filled. auto_submit is off — submit manually.", filled_info)
-
+    # Never submitted, whatever `auto_submit` says. The flag survives only so
+    # old callers and saved profiles do not break; it has no effect.
+    if auto_submit or profile.auto_submit:
+        logger.warning("auto_submit was requested and ignored: TempoApply never submits")
+    await screenshot_failure(page, log_dir / f"{job_id}-filled.png")
     if await captcha_present(page):
-        await screenshot_failure(page, log_dir / f"{job_id}.png")
-        return apply_result("needs_review", "CAPTCHA present — complete this one in the browser", filled_info)
-
-    clicked = await click_submit(scope)
-    await wait_settled(page, 1500)
-    if await application_succeeded(page):
-        return apply_result("applied", "Application submitted", filled_info)
-    if clicked:
-        await wait_settled(page, 2000)
-        if await application_succeeded(page):
-            return apply_result("applied", "Application submitted", filled_info)
-        await screenshot_failure(page, log_dir / f"{job_id}.png")
-        return apply_result(
-            "needs_review",
-            "Submit clicked but confirmation was not detected. Check the screenshot.",
-            filled_info,
-        )
-    await screenshot_failure(page, log_dir / f"{job_id}.png")
-    return apply_result("needs_review", "Could not find a submit button", filled_info)
+        return apply_result("needs_review", "Form filled; a CAPTCHA is waiting — review and submit it yourself.", filled_info)
+    return apply_result("needs_review", "Form filled. Review it and submit it yourself.", filled_info)

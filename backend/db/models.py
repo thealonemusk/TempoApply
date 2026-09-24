@@ -90,7 +90,9 @@ class ResumeSend(Base):
     title = Column(String, default="")
     status = Column(String, default="")           # copy of jobs.status
     applied_at = Column(DateTime, nullable=True)  # copy of jobs.applied_at
-    sent_at = Column(DateTime, default=func.now(), onupdate=func.now())
+    # Set by sends.record only. No onupdate: copying a status change onto this
+    # row would otherwise move sent_at, and with it the no-reply window.
+    sent_at = Column(DateTime, default=func.now())
     channel = Column(String, default="")          # headless | extension
     variant = Column(String, default="default")   # tailored | default
     sha256 = Column(String, default="")

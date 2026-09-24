@@ -14,6 +14,7 @@ from backend.applier.adapters import LOG_DIR, apply_on_page
 from backend.applier.ats import detect_ats
 from backend.applier.routing import Routing, needs_linkedin, route_job
 from backend.applier.control import clear_stop, should_stop
+from backend.applier.fields import JOB_LOCATION
 from backend.applier.filler import screenshot_failure
 from backend.applier.linkedin_apply import ensure_linkedin_session
 from backend.applier.profile import ApplicantProfile, ensure_resume_pdf, load_profile
@@ -133,6 +134,9 @@ async def apply_one_job(
     applied to at that link, not on LinkedIn.
     """
     target = apply_url or job.url
+    # Read by the resolver for questions that name no country ("Will you
+    # require sponsorship?"): they mean the job's country.
+    token = JOB_LOCATION.set(job.location or "")
     try:
         return await apply_on_page(
             page=page,
@@ -151,11 +155,13 @@ async def apply_one_job(
         logger.exception(f"Apply failed for {job.title} @ {job.company}")
         await screenshot_failure(page, LOG_DIR / f"{job.id}.png")
         return {"status": "failed", "message": str(exc), "ats": detect_ats(job.url)}
+    finally:
+        JOB_LOCATION.reset(token)
 
 
 async def run_apply_pipeline(
     job_ids: Optional[List[str]] = None,
-    auto_submit: bool = True,
+    auto_submit: bool = False,
     headless: bool = False,
 ) -> Dict:
     profile = load_profile()

@@ -13,6 +13,16 @@ not have to intervene unless genuinely necessary.
 **It never submits.** Filling is automated, the final click is his. A mis-parsed
 field reaching a real employer cannot be recalled.
 
+This was a promise, not a property, until 2026-09-24: the main dashboard's
+Apply sent `auto_submit: true`, the API and the committed profile defaulted to
+true, and `filler.py` clicked Submit. `APPLY_NAMES` even contained "Submit
+application", so opening a form could send it blank. Now there is no submit
+helper at all; `finish_application` ignores `auto_submit`; and every click goes
+through `click_named_button`, which refuses anything that reads as a submit or
+is a native submitter of a form holding application inputs.
+`backend/applier/test_never_submits.py` proves it in a real browser — keep it
+green, and never add a submit path "behind a flag".
+
 ## Hard rules
 
 1. **No fabrication on the resume.** He has said "you can lie on my resume".
@@ -22,6 +32,17 @@ field reaching a real employer cannot be recalled.
    It has already caught a `45 -> 450` inflation and invented `Kafka`,
    `Terraform` and `Google`. This is a gate, not a prompt instruction. Do not
    weaken it into one.
+
+   Its first version checked every rewrite against the *whole* document and
+   compared numbers by substring, so 40% -> 64% passed (the digits are in his
+   phone number), 18 -> 8 passed, 45 -> 45M passed, and a Paytm bullet could say
+   "at Denr Financial Services". Scope is the point: figures are checked
+   against the bullet being rewritten, as value + unit; names and technologies
+   against the bullet's own entry (`texdoc.entry_context`); number words
+   ("five", "millions") at all; and a capitalised job-description term the
+   master never mentions is refused in any casing. Only the summary may draw on
+   the whole resume. Aliases are explicit (`_ALIASES`), never substrings —
+   substring equivalence let `javascript` pass for `java`.
 2. **Never sign in to his real employer accounts to submit an application.**
    Credentials are for filling forms he then reviews.
 3. **Secrets stay out of git and out of argv.** `config/.env` and
@@ -29,6 +50,17 @@ field reaching a real employer cannot be recalled.
    write-only through the API and read via `getpass` in the CLI — never pass a
    password as a command argument. A password he pasted in chat should be
    rotated.
+
+   The API is **localhost only** (`API_HOST=127.0.0.1`). On 0.0.0.0 with no
+   login, anything on the Wi-Fi could set the resume path to `config/.env` and
+   download it as "the resume". `local_only` in `main.py` refuses a foreign
+   Host (DNS rebinding) and a foreign Origin on writes (CSRF — CORS blocks
+   reading, not sending); `safe_resume_path` confines the resume to
+   `resumes/`; `/api/settings` refuses line breaks. `config/.env.example` is
+   **not** a template — it holds real credentials and must stay ignored;
+   `config/env.template` is the tracked one. `config/applicant_profile.json`
+   (PII) is untracked. `audit.py` now asks git what is tracked and scans
+   tracked content for key shapes.
 4. **LinkedIn is manual.** Auto-apply does not work there and the extension is
    excluded from `linkedin.com` by `exclude_matches` in the manifest. LinkedIn
    fingerprints ~2,953 named extensions; the documented permanent restrictions
@@ -140,14 +172,24 @@ from *assumed* Workday markup and passes regardless — it is not evidence.
 
 ## Verification
 
-All three are green as of the last sweep. Run them before claiming work is done.
+All green as of 2026-09-24. Run them before claiming work is done.
 
 ```bash
-python scripts/audit.py                  # imports, deps, wiring, control chars, secrets
-python backend/resume/test_resume.py     # 73 checks
-python extension/test/run_tests.py       # 110 checks
+python scripts/audit.py                       # imports, deps, wiring, control chars, secrets
+python backend/resume/test_resume.py          # 163 — parser, guard scoping, tailor, send log, LLM retry
+python backend/applier/test_fields.py         # 97 — the answers sent to employers
+python backend/applier/test_never_submits.py  # 10 — real browser; no path submits
+python backend/api/test_api_security.py       # 22 — localhost, origin, resume path, .env injection
+python backend/scrapers/test_filters.py       # 159 — location, title, experience, tiers, dedup, ledger
+python extension/test/run_tests.py            # 182
 python extension/test/run_tests.py --integration   # real Chrome
 ```
+
+**No test may touch `tempoapply.db` or `config/`.** Every suite that goes
+through the API installs an in-memory database via `app.dependency_overrides`.
+An early `test_api_security.py` probed the origin check with
+`/purge-visited` against the real DB — harmless only because nothing was in
+the purge set. Probe with a request that stops at validation (422).
 
 A fixture the extension itself wrote is not evidence that a tenant works. Two
 of the suites here exist because the green ones were lying: `run_async_prompt`
@@ -198,6 +240,33 @@ restart rather than reusing it.
 After changing the extension: reload it at `chrome://extensions`, then
 hard-refresh any job tab already open — the old content script stays resident
 in those pages.
+
+## State as of 2026-09-24 — after the full review
+
+A five-way review found, and this pass fixed, with a revert-verified check for
+each: the submit paths above; the guard's scope; LAN/CSRF/file-read exposure;
+wrong legal answers (`pick_option` picked "Protected Veteran" for "I am not a
+protected veteran", "authorized to work in the United States?" answered Yes);
+substring field matching ("Personal statement" -> state, "mobile app" -> the
+phone number, "embrace" -> ethnicity, "military" -> ITAR); extension option
+matching ("no" inside "now" answered sponsorship Yes); the India filter
+admitting Seattle/Dublin when the JD mentioned India; "2026 New Grad", "VPN",
+"Leadership" and "1+ years" rejected as senior; the ledger downgrading
+dismissed jobs so they came back; same-title requisitions deduplicated away;
+company tiers ("Goldman Sachs Services Pvt Ltd" excluded, "Square Yards" ELITE).
+
+Work authorisation is country-aware. A question naming no country ("Will you
+require sponsorship?") means the job's country: `fields.JOB_LOCATION` is set
+per job by the engine and per request by `/api/autofill/resolve`. A known
+India-located job answers from the profile; a job abroad answers
+authorisation "No" and leaves sponsorship blank; an unknown page leaves both
+blank. Blank beats false.
+
+Still on him: rotate the LinkedIn/Workday password (the review found them
+reused, and a copy sits in `config/.env.example`); move secrets out of the
+OneDrive-synced folder or accept that they sync; set `EXTENSION_ID` to pin
+the extension; check whether `github.com/thealonemusk/TempoApply` is public —
+the profile was pushed before it was untracked and stays in history.
 
 ## State as of 2026-09-23
 

@@ -70,7 +70,12 @@ class Settings(BaseSettings):
     # App
     base_resume_path: str = "resumes/base_resume.tex"
     database_url: str = "sqlite:///./tempoapply.db"
-    api_host: str = "0.0.0.0"
+    # Localhost only. 0.0.0.0 served the profile, the resume and every
+    # write endpoint to anything on the same Wi-Fi, with no login.
+    api_host: str = "127.0.0.1"
+    # Pins the extension allowed to call the API (chrome://extensions shows
+    # the 32-letter id). Blank accepts any extension origin.
+    extension_id: str = ""
     api_port: int = 8000
 
     class Config:
