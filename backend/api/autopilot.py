@@ -263,6 +263,14 @@ def screenshot(job_id: str):
     raise HTTPException(status_code=404, detail="No screenshot for this job")
 
 
+@router.get("/callbacks")
+def callbacks(db: Session = Depends(get_db)) -> Dict[str, Any]:
+    """Callback rate by how the resume was prepared — whether tailoring pays."""
+    from backend.resume.sends import callback_stats
+
+    return callback_stats(db)
+
+
 @router.get("/resume/{job_id}")
 def tailored_resume(job_id: str):
     """The tailored PDF produced for this job."""

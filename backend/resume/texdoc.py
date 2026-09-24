@@ -208,9 +208,32 @@ class Slot:
 
 
 @dataclass
+class SkillLine:
+    """
+    One `\\textbf{Label:} a, b, c \\\\` row of a skills section.
+
+    Items are raw LaTeX, moved as whole substrings and never re-escaped, so a
+    reorder cannot change what an item says — only where it sits.
+    """
+
+    label: str
+    start: int               # span of the item list, after the label
+    end: int
+    items: List[str]         # raw items, in source order
+    trailing: str            # separator left after the last item ("," or "")
+
+    def render(self, order: Sequence[int]) -> str:
+        return ", ".join(self.items[i] for i in order) + self.trailing
+
+
+@dataclass
 class TexDoc:
     source: str
     slots: List[Slot] = field(default_factory=list)
+    skills: List[SkillLine] = field(default_factory=list)
+    # Summary openings the author has written as true of themselves, from a
+    # `% tempoapply-headlines: A | B | C` comment. The first is the one in use.
+    headlines: List[str] = field(default_factory=list)
 
     def slot(self, slot_id: str) -> Optional[Slot]:
         return next((s for s in self.slots if s.id == slot_id), None)
@@ -219,33 +242,106 @@ class TexDoc:
     def editable_slots(self) -> List[Slot]:
         return [s for s in self.slots if s.editable]
 
+    def bullet_groups(self) -> List[List[Slot]]:
+        """
+        Bullets that may trade places: the droppable bullets of one entry, in
+        source order, with nothing but whitespace between them. A comment or a
+        command between two bullets means they are not one plain list, and the
+        group is left alone rather than risk moving markup.
+        """
+        groups: Dict[tuple, List[Slot]] = {}
+        for slot in sorted(self.slots, key=lambda s: s.outer_start):
+            if slot.droppable:
+                groups.setdefault((slot.section, slot.entry), []).append(slot)
+        out = []
+        for members in groups.values():
+            gaps = (
+                self.source[a.outer_end:b.outer_start]
+                for a, b in zip(members, members[1:])
+            )
+            # A bullet holding a nested list cuts off at the inner \item, so
+            # its span carries a bare \begin{itemize}; moving it breaks the
+            # document. Such an entry keeps its order.
+            nested = any(
+                re.search(r"\\(?:begin|end)\s*\{",
+                          self.source[s.outer_start:s.outer_end])
+                for s in members
+            )
+            if len(members) > 1 and not nested and all(not g.strip() for g in gaps):
+                out.append(members)
+        return out
+
+    def _slot_body(self, slot: Slot, edits: Dict[str, str]) -> str:
+        """A bullet's whole outer span, with its edit applied."""
+        text = escape(edits[slot.id]) if slot.id in edits and slot.editable else slot.raw
+        return (
+            self.source[slot.outer_start:slot.start]
+            + text
+            + self.source[slot.end:slot.outer_end]
+        )
+
     def render(
         self,
         edits: Optional[Dict[str, str]] = None,
         drop: Optional[Iterable[str]] = None,
+        order: Optional[Sequence[str]] = None,
+        skill_order: Optional[Dict[int, Sequence[int]]] = None,
     ) -> str:
         """
         Rebuild the document.
 
-        `edits` maps slot id -> new plain text; `drop` removes whole bullets.
-        With neither, the result is the original source byte for byte.
+        `edits` maps slot id -> new plain text; `drop` removes whole bullets;
+        `order` lists slot ids most-important first, and bullets within each
+        entry are laid out in that order; `skill_order` maps a skills line to a
+        permutation of its items. With none of them, the result is the original
+        source byte for byte.
         """
         edits = edits or {}
         dropped: Set[str] = set(drop or ())
+        skill_order = skill_order or {}
 
-        # Work through the spans left to right, copying the untouched source
-        # between them. Splicing by offset is what guarantees the round trip.
+        # (start, end, replacement), non-overlapping. Splicing by offset is what
+        # guarantees the round trip.
+        spans: List[tuple[int, int, str]] = []
+        grouped: Set[str] = set()
+
+        if order is not None:
+            rank = {sid: i for i, sid in enumerate(order)}
+            for members in self.bullet_groups():
+                kept = sorted(
+                    (s for s in members if s.id not in dropped),
+                    key=lambda s: (rank.get(s.id, len(rank)), s.outer_start),
+                )
+                # Position i of the entry gets the i-th most relevant bullet;
+                # positions left over once dropped bullets are gone go empty.
+                for i, position in enumerate(members):
+                    body = self._slot_body(kept[i], edits) if i < len(kept) else ""
+                    spans.append((position.outer_start, position.outer_end, body))
+                    grouped.add(position.id)
+
+        for slot in self.slots:
+            if slot.id in grouped:
+                continue
+            if slot.id in dropped and slot.droppable:
+                spans.append((slot.outer_start, slot.outer_end, ""))
+            elif slot.id in edits and slot.editable:
+                spans.append((slot.start, slot.end, escape(edits[slot.id])))
+
+        for index, perm in skill_order.items():
+            if 0 <= index < len(self.skills):
+                line = self.skills[index]
+                spans.append((line.start, line.end, line.render(perm)))
+
         pieces: List[str] = []
         cursor = 0
-        for slot in sorted(self.slots, key=lambda s: s.outer_start):
-            if slot.id in dropped and slot.droppable:
-                pieces.append(self.source[cursor:slot.outer_start])
-                cursor = slot.outer_end
-                continue
-            if slot.id in edits and slot.editable:
-                pieces.append(self.source[cursor:slot.start])
-                pieces.append(escape(edits[slot.id]))
-                cursor = slot.end
+        for start, end, text in sorted(spans):
+            if start < cursor:
+                # Overlapping spans would splice the same source twice and
+                # print duplicated text into a resume sent to an employer.
+                raise ValueError(f"overlapping edit spans at offset {start}")
+            pieces.append(self.source[cursor:start])
+            pieces.append(text)
+            cursor = end
         pieces.append(self.source[cursor:])
         return "".join(pieces)
 
@@ -481,7 +577,92 @@ def parse(source: str) -> TexDoc:
     slots.sort(key=lambda s: s.start)
     for i, slot in enumerate(slots):
         slot.id = f"{slot.kind[0]}{i:02d}"
-    return TexDoc(source=source, slots=slots)
+    # A skills row written as an \item is already a bullet slot; two edits
+    # over one span cannot both be spliced, so the bullet keeps it.
+    skills = [
+        line for line in _find_skill_lines(source, sections, body_end)
+        if not any(s.outer_start < line.end and line.start < s.outer_end for s in slots)
+    ]
+    return TexDoc(
+        source=source,
+        slots=slots,
+        skills=skills,
+        headlines=_find_headlines(source),
+    )
+
+
+_HEADLINES_RE = re.compile(r"(?m)^[ \t]*%[ \t]*tempoapply-headlines:[ \t]*(.+)$")
+_SKILL_LABEL_RE = re.compile(r"(?m)^[ \t]*\\textbf\s*\{")
+_LINE_BREAK_RE = re.compile(r"\\\\|\n")
+
+
+def _find_headlines(source: str) -> List[str]:
+    m = _HEADLINES_RE.search(source)
+    if not m:
+        return []
+    return [h.strip() for h in m.group(1).split("|") if h.strip()]
+
+
+def _split_items(region: str) -> List[str]:
+    """Split on commas outside brackets: `AWS (EC2, S3)` is one item."""
+    items, depth, current = [], 0, []
+    for ch in region:
+        if ch in "({[":
+            depth += 1
+        elif ch in ")}]":
+            depth -= 1
+        if ch == "," and depth == 0:
+            items.append("".join(current).strip())
+            current = []
+        else:
+            current.append(ch)
+    items.append("".join(current).strip())
+    return items
+
+
+def _find_skill_lines(
+    source: str, sections: List[tuple[int, str]], body_end: int
+) -> List[SkillLine]:
+    """
+    The `\\textbf{Label:} items` rows under a Skills section. A row whose items
+    do not rejoin to exactly the original text is skipped, so a reorder can
+    never rewrite a line it did not fully understand.
+    """
+    out: List[SkillLine] = []
+    for i, (at, title) in enumerate(sections):
+        if not re.search(r"skill", title, re.I):
+            continue
+        stop = sections[i + 1][0] if i + 1 < len(sections) else body_end
+        for m in _SKILL_LABEL_RE.finditer(source, at, stop):
+            open_idx = m.end() - 1
+            close_idx = _matching_brace(source, open_idx)
+            if close_idx < 0 or close_idx >= stop:
+                continue
+            brk = _LINE_BREAK_RE.search(source, close_idx + 1, stop)
+            region_end = brk.start() if brk else stop
+            region = source[close_idx + 1:region_end]
+            lead = len(region) - len(region.lstrip())
+            text = region.strip()
+            if not text or "%" in text.replace("\\%", ""):
+                continue
+            items = _split_items(text)
+            trailing = ""
+            if items and items[-1] == "":
+                items.pop()
+                trailing = ","
+            if len(items) < 2 or any(not it for it in items):
+                continue
+            if ", ".join(items) + trailing != text:
+                continue
+            start = close_idx + 1 + lead
+            out.append(SkillLine(
+                label=label_text(source[open_idx + 1:close_idx]).rstrip(":").strip(),
+                start=start,
+                end=start + len(text),
+                items=items,
+                trailing=trailing,
+            ))
+    return out
 
 
 def parse_file(path) -> TexDoc:

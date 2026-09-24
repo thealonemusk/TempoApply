@@ -18,6 +18,7 @@ from backend.applier.filler import screenshot_failure
 from backend.applier.linkedin_apply import ensure_linkedin_session
 from backend.applier.profile import ApplicantProfile, ensure_resume_pdf, load_profile
 from backend.db.models import Application, Job, SessionLocal
+from backend.resume import sends
 from backend.resume.tailor import tailored_upload
 from backend import seen_ledger
 from backend.scrapers.base import create_browser_context
@@ -267,6 +268,8 @@ async def run_apply_pipeline(
                         f"Resume for {fresh.company}: "
                         f"{'tailored ' if job_resume != resume else 'default '}{job_resume}"
                     )
+                    sends.record(db, fresh.id, job_resume, channel="headless",
+                                 tailored=job_resume != resume)
 
                     page = await _reuse_page(context)
                     result = await apply_one_job(

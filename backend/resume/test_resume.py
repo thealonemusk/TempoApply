@@ -326,6 +326,231 @@ def test_tailored_lookup() -> None:
             tailor.TAILORED_DIR, tailor.master_path = saved
 
 
+REORDER_TEX = r"""\documentclass{article}
+\begin{document}
+% tempoapply-headlines: Backend engineer | Platform / infrastructure engineer
+\section{Summary}
+\small
+Backend engineer with production ownership of fleet infrastructure.
+
+\section{Experience}
+\textbf{Acme}
+\begin{itemize}
+  \resumeItem{Wrote internal tooling for the support team.}
+
+  \resumeItem{Measured a 40\% drop in page load time.}
+
+  \resumeItem{Ran Kubernetes clusters with Terraform for the platform.}
+\end{itemize}
+
+\section{Technical Skills}
+\textbf{Languages:} C, Java, Python \\
+\textbf{Infrastructure:} AWS (EC2, S3, Lambda), Docker, Kubernetes \\
+\textbf{Databases:} MySQL, PostgreSQL,
+\end{document}
+"""
+
+
+def test_reordering() -> None:
+    section("Reordering — bullets within an entry, skills within a line")
+    from backend.resume import jd as jd_mod
+    from backend.resume import tailor
+
+    doc = texdoc.parse(REORDER_TEX)
+    bullets = [s for s in doc.slots if s.kind == "bullet"]
+    check("one reorderable group", [len(g) for g in doc.bullet_groups()], [3])
+    check("identity order is byte-identical",
+          doc.render(order=[s.id for s in doc.slots]) == doc.source, True)
+
+    flipped = doc.render(order=[s.id for s in reversed(bullets)])
+    positions = [flipped.index(s.raw) for s in reversed(bullets)]
+    check("reversed order is laid out reversed", positions == sorted(positions), True)
+    check("every bullet appears exactly once",
+          all(flipped.count(s.raw) == 1 for s in bullets), True)
+    check("reorder moves only bullets", len(flipped), len(doc.source))
+    dropped = doc.render(order=[s.id for s in reversed(bullets)], drop={bullets[2].id})
+    check("drop still works under a reorder", bullets[2].raw in dropped, False)
+
+    # Skills: brackets are one item, the trailing comma survives.
+    labels = [l.label for l in doc.skills]
+    check("skills lines found", labels, ["Languages", "Infrastructure", "Databases"])
+    check("bracketed item stays whole", doc.skills[1].items[0], "AWS (EC2, S3, Lambda)")
+    check("trailing comma kept", doc.skills[2].trailing, ",")
+    moved = doc.render(skill_order={0: [2, 0, 1]})
+    check("skills item moved", "\\textbf{Languages:} Python, C, Java \\\\" in moved, True)
+
+    spec = jd_mod.JobSpec(job_title="Platform Engineer", required=["kubernetes", "python"])
+    order = tailor._bullet_order(doc, spec)
+    lead = [sid for sid in order if sid in {s.id for s in bullets}][0]
+    check("job evidence leads the entry", lead, bullets[2].id)
+    # The metric bullet must not jump the author's first bullet on a number
+    # alone — reverting to reward_numbers=True puts b.."40%" second.
+    rest = [sid for sid in order if sid in {bullets[0].id, bullets[1].id}]
+    check("a number alone does not promote", rest, [bullets[0].id, bullets[1].id])
+
+    skills = tailor._skill_order(doc, spec, "We run Kubernetes and Python services.")
+    check("asked-for language moves first", skills.get(0, [])[:1], [2])
+    check("asked-for infra moves first", skills.get(1, [])[:1], [2])
+
+    summary = next(s for s in doc.slots if s.kind == "summary")
+    edit = tailor._headline_edit(doc, spec, summary.text)
+    check("headline picks the role's option",
+          edit[1] if edit else None, "Platform / infrastructure engineer")
+    backend = jd_mod.JobSpec(job_title="Backend Engineer", required=["java"])
+    check("headline kept when it already fits", tailor._headline_edit(doc, backend, summary.text), None)
+
+
+def test_send_log() -> None:
+    section("Send log — callback rate by resume variant")
+    from datetime import datetime, timedelta
+
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from backend.db.models import Base, Job, ResumeSend
+    from backend.resume import sends
+
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    db = sessionmaker(bind=engine)()
+    now = datetime(2026, 9, 23)
+    old, fresh = now - timedelta(days=40), now - timedelta(days=3)
+    cases = [
+        ("tailored", "interviewing", old),
+        ("tailored", "applied", old),        # no reply after 21 days
+        ("tailored", "applied", fresh),      # pending: left out of the rate
+        ("default", "rejected", old),
+        ("default", "tailored", old),        # filled, never submitted
+    ]
+    for i, (variant, status, when) in enumerate(cases):
+        db.add(Job(id=f"j{i}", title="t", company="c", platform="p", url=f"u{i}",
+                   status=status, applied_at=when))
+        db.add(ResumeSend(job_id=f"j{i}", variant=variant, sent_at=when))
+    db.commit()
+    stats = sends.callback_stats(db, now=now)
+    tailored = stats["by"]["variant"]["tailored"]
+    check("callback counted", tailored["callback"], 1)
+    check("old silence is a no", tailored["no_reply"], 1)
+    check("young application pending", tailored["pending"], 1)
+    check("rate over settled only", tailored["rate"], 50.0)
+    check("unsubmitted fill excluded", stats["overall"]["sent"], 4)
+    check("small sample flagged", stats["overall"]["enough_data"], False)
+
+    # The dashboard's Clear deletes rejected jobs. The rejection must survive,
+    # or every cleared "no" silently inflates the rate.
+    job = db.get(Job, "j1")
+    job.status = "rejected"
+    db.commit()
+    check("status copied onto the send", db.get(ResumeSend, "j1").status, "rejected")
+    db.delete(job)
+    db.commit()
+    after = sends.callback_stats(db, now=now)["by"]["variant"]["tailored"]
+    check("deleted job's rejection still counted", after["rejected"], 1)
+    check("rate uses the kept outcome", after["rate"], 50.0)
+    db.close()
+
+
+def test_arrangement_safety() -> None:
+    section("Arrangement safety — shapes that must not be reordered")
+    nested = texdoc.parse(
+        "\\begin{document}\n\\section{Experience}\n\\textbf{Acme}\n\\begin{itemize}\n"
+        "  \\item Led the platform work\n  \\begin{itemize}\n    \\item sub point\n"
+        "  \\end{itemize}\n  \\item Second top-level point\n\\end{itemize}\n\\end{document}\n"
+    )
+    check("nested list entry not reorderable", nested.bullet_groups(), [])
+
+    # A skills row wrapped in a macro bullet is also a bullet slot: two edits
+    # over one span, so the bullet keeps it and the row is not reordered.
+    wrapped = texdoc.parse(
+        "\\begin{document}\n\\section{Skills}\n\\begin{itemize}\n"
+        "  \\resumeItem{\n  \\textbf{Languages:} C, Java, Python\n  }\n\\end{itemize}\n\\end{document}\n"
+    )
+    check("skills row inside a bullet left to the bullet", wrapped.skills, [])
+    # A bare \item before the row is not a slot (bullet text stops at \textbf),
+    # so that row stays reorderable, and reordering it must still render.
+    bare = texdoc.parse(
+        "\\begin{document}\n\\section{Skills}\n\\begin{itemize}\n"
+        "  \\item\n  \\textbf{Languages:} C, Java, Python\n\\end{itemize}\n\\end{document}\n"
+    )
+    check("bare-\\item skills row still found", len(bare.skills), 1)
+    check("bare-\\item row reorders cleanly",
+          "Python, C, Java" in bare.render(skill_order={0: [2, 0, 1]}), True)
+
+    # The same skills line listed twice is two edits over one span.
+    doc = texdoc.parse(REORDER_TEX)
+    twice = texdoc.TexDoc(source=doc.source, slots=doc.slots, skills=[doc.skills[0]] * 2)
+    try:
+        twice.render(skill_order={0: [2, 1, 0], 1: [2, 1, 0]})
+        refused = "no error"
+    except ValueError:
+        refused = "ValueError"
+    check("overlapping spans refused", refused, "ValueError")
+
+
+def test_tailor_end_to_end() -> None:
+    section("Tailor end to end — refused rewrites, failed builds")
+    if not rc.is_available():
+        print("  SKIP  tectonic not installed")
+        return
+    import tempfile
+
+    from backend.resume import tailor
+
+    saved_dir, saved_propose = tailor.TAILORED_DIR, tailor._propose_rewrites
+    with tempfile.TemporaryDirectory() as tmp:
+        tailor.TAILORED_DIR = Path(tmp) / "tailored"
+        try:
+            # A model that answers, but only with a fabrication.
+            doc = texdoc.parse_file(SAMPLE)
+            target = doc.editable_slots[1].id
+            tailor._propose_rewrites = lambda *a, **k: (
+                {target: "Built Kafka pipelines at Google for 450 services."}, "fake"
+            )
+            res = tailor.tailor("We need Java, MQTT and Jenkins CI/CD.", job_title="Backend Engineer",
+                                company="Acme", job_id="e2e00001-x", master=str(SAMPLE))
+            check("tailor succeeds", res.ok, True)
+            check("fabrication refused", len(res.report.get("rejected", [])), 1)
+            check("refused rewrites are not 'llm used'", res.report.get("llm_used"), False)
+            check("model_rewrites counts only accepted", res.report.get("model_rewrites"), 0)
+            check("arranged", res.report.get("arranged"), True)
+            out = Path(res.pdf_path).parent
+            check("no staging file left", (out / "resume.building.pdf").exists(), False)
+
+            # A master that cannot compile must leave no resume.pdf behind.
+            broken = Path(tmp) / "broken.tex"
+            broken.write_text(SAMPLE.read_text(encoding="utf-8").replace(
+                "\\end{document}", "\\undefinedcommandxyz\n\\end{document}"), encoding="utf-8")
+            tailor._propose_rewrites = lambda *a, **k: ({}, "none")
+            bad = tailor.tailor("Java", company="Broken", job_id="e2e00002-y", master=str(broken))
+            check("broken master fails cleanly", bad.ok, False)
+            bad_dir = tailor.output_dir("Broken", "e2e00002-y")
+            check("no resume.pdf from a failed build", (bad_dir / "resume.pdf").exists(), False)
+            check("no staging file from a failed build", (bad_dir / "resume.building.pdf").exists(), False)
+
+            # The case staging exists for: round one builds a PDF, a later
+            # trim round fails. max_pages=0 forces a second round; every
+            # compile after the first raises.
+            real_compile, calls = rc.compile_tex, []
+
+            def flaky(*a, **k):
+                calls.append(1)
+                if len(calls) == 1:
+                    return real_compile(*a, **k)
+                raise rc.CompileError("simulated failure on a later round")
+
+            tailor.rc.compile_tex = flaky
+            try:
+                late = tailor.tailor("Java", company="Late", job_id="e2e00003-z",
+                                     master=str(SAMPLE), max_pages=0)
+            finally:
+                tailor.rc.compile_tex = real_compile
+            late_dir = tailor.output_dir("Late", "e2e00003-z")
+            check("late failure reported", late.ok, False)
+            check("round one's PDF not left as resume.pdf", (late_dir / "resume.pdf").exists(), False)
+        finally:
+            tailor.TAILORED_DIR, tailor._propose_rewrites = saved_dir, saved_propose
+
+
 def main() -> None:
     doc = test_parser()
     test_template_style()
@@ -337,6 +562,10 @@ def main() -> None:
     test_compile()
     test_one_page_fitter()
     test_tailored_lookup()
+    test_reordering()
+    test_send_log()
+    test_arrangement_safety()
+    test_tailor_end_to_end()
     if "--llm" in sys.argv:
         test_llm()
 

@@ -83,6 +83,12 @@ def ask_json(
     chosen = model or model_name()
     last_error: Optional[Exception] = None
 
+    # OpenAI's reasoning models refuse `max_tokens`; several OpenAI-compatible
+    # servers (Ollama, Gemini's compatibility layer) only know `max_tokens`.
+    limit = (
+        {"max_tokens": max_tokens} if base_url() else {"max_completion_tokens": max_tokens}
+    )
+
     for attempt in range(MAX_RETRIES + 1):
         try:
             response = client.chat.completions.create(
@@ -92,7 +98,7 @@ def ask_json(
                     {"role": "user", "content": user},
                 ],
                 response_format={"type": "json_object"},
-                max_completion_tokens=max_tokens,
+                **limit,
             )
             content = (response.choices[0].message.content or "").strip()
             if not content:

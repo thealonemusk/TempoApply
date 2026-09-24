@@ -466,6 +466,11 @@ def resume(url: str = "", tab_url: str = "", db: Session = Depends(get_db)):
     path = path or default
     if not path:
         raise HTTPException(status_code=404, detail="No resume on file — upload one in Settings")
+    if job:
+        # A page that is not a known job cannot be joined to an outcome later.
+        from backend.resume import sends
+
+        sends.record(db, job.id, path, channel="extension", tailored=tailored)
     mime = mimetypes.guess_type(path.name)[0] or "application/pdf"
     return {
         "filename": path.name,
