@@ -57,7 +57,13 @@ class Settings(BaseSettings):
     # Any OpenAI-compatible endpoint: a proxy, a gateway, or a local runtime
     # such as Ollama (http://localhost:11434/v1). Blank means api.openai.com.
     openai_base_url: str = ""
-    gemini_model: str = "gemini-2.0-flash"
+    # "gemini" sends tailoring to Google with GEMINI_API_KEY / GEMINI_MODEL;
+    # blank or "openai" uses gpt_key. See backend/resume/llm.py.
+    llm_provider: str = ""
+    # gemini-2.x is closed to new keys; 3.6-flash is what Google points to.
+    gemini_model: str = "gemini-3.6-flash"
+    # Tried when the primary is overloaded or out of quota; blank for none.
+    gemini_fallback_model: str = ""
     tectonic_path: str = ""                  # blank -> tools/tectonic.exe, then PATH
     master_resume_path: str = "resumes/master_resume.tex"
 

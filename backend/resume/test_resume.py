@@ -551,6 +551,89 @@ def test_tailor_end_to_end() -> None:
             tailor.TAILORED_DIR, tailor._propose_rewrites = saved_dir, saved_propose
 
 
+def test_llm_resilience() -> None:
+    """Retry, fallback and cooldown, against a fake client — no network, no key."""
+    section("LLM resilience — rate limits, overload, fallback, cooldown")
+    import types
+
+    from backend.resume import llm
+
+    class Err(Exception):
+        def __init__(self, status, msg=""):
+            super().__init__(msg or f"Error code: {status}")
+            self.status_code = status
+
+    quota = Err(429, "Error code: 429 - You exceeded your current quota. Please retry in 52.9s.")
+    check("429 waits what the server names", llm._wait_for(quota, 0), 53.9)
+    daily = Err(429, "quota exceeded. Please retry in 7200s.")
+    check("hours-long wait fails fast", llm._wait_for(daily, 0), None)
+    # The real daily-quota error names a short wait; the quota id is the truth.
+    spent = Err(429, "Quota exceeded ... limit: 20 ... Please retry in 27.4s. "
+                     "'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier'")
+    check("spent daily quota is not retried", llm._wait_for(spent, 0), None)
+    check("bad key does not retry", llm._wait_for(Err(401), 0), None)
+    check("overload backs off", llm._wait_for(Err(503), 0), 5)
+
+    calls: list = []
+    script: dict = {}
+
+    def create(model, **_):
+        calls.append(model)
+        outcome = script[model].pop(0) if script.get(model) else Err(503)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return types.SimpleNamespace(choices=[types.SimpleNamespace(
+            message=types.SimpleNamespace(content=outcome))])
+
+    fake = types.SimpleNamespace(chat=types.SimpleNamespace(
+        completions=types.SimpleNamespace(create=create)))
+    saved = (llm._client, llm.model_name, llm.fallback_model, llm.time.sleep, dict(llm._down_until))
+    llm._client = lambda: fake
+    llm.model_name = lambda: "primary"
+    llm.fallback_model = lambda: "backup"
+    llm.time.sleep = lambda s: None
+    llm._down_until.clear()
+    try:
+        script.update(primary=[Err(503)], backup=[])
+        script["primary"].append('{"ok": 1}')
+        check("recovers after one overload", llm.ask_json("s", "u"), {"ok": 1})
+
+        calls.clear()
+        script.update(primary=[Err(503)] * 3, backup=['{"via": "backup"}'])
+        check("falls back when primary is down", llm.ask_json("s", "u"), {"via": "backup"})
+        check("primary tried 3 times, then backup", calls, ["primary"] * 3 + ["backup"])
+
+        calls.clear()
+        script.update(primary=['{"x": 1}'], backup=['{"via": "backup"}'])
+        check("down model skipped during cooldown", llm.ask_json("s", "u"), {"via": "backup"})
+        check("no call spent on the cooling model", calls, ["backup"])
+
+        calls.clear()
+        script.update(backup=[Err(503)] * 3)
+        try:
+            llm.ask_json("s", "u")
+            outcome = "returned"
+        except llm.LLMUnavailable:
+            outcome = "LLMUnavailable"
+        check("all down raises for the offline path", outcome, "LLMUnavailable")
+        calls.clear()
+        try:
+            llm.ask_json("s", "u")
+        except llm.LLMUnavailable:
+            pass
+        check("then fails with zero calls", calls, [])
+
+        llm._down_until.clear()
+        calls.clear()
+        script.update(primary=[Err(401)], backup=['{"ok": 2}'])
+        check("bad key is not retried on that model", llm.ask_json("s", "u"), {"ok": 2})
+        check("one call on the refused model", calls.count("primary"), 1)
+    finally:
+        (llm._client, llm.model_name, llm.fallback_model, llm.time.sleep) = saved[:4]
+        llm._down_until.clear()
+        llm._down_until.update(saved[4])
+
+
 def main() -> None:
     doc = test_parser()
     test_template_style()
@@ -566,6 +649,7 @@ def main() -> None:
     test_send_log()
     test_arrangement_safety()
     test_tailor_end_to_end()
+    test_llm_resilience()
     if "--llm" in sys.argv:
         test_llm()
 
