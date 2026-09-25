@@ -11,8 +11,10 @@ import { Button } from '@/components/ui/Button';
 import { Card, CardDescription, CardTitle } from '@/components/ui/Card';
 import {
   autopilot, ROUTE_STYLE, TIER_STYLE,
-  type AutopilotStatus, type Candidate, type CandidateStats, type QueueItem, type Tier,
+  type AutopilotStatus, type CallbackBucket, type CallbackStats, type Candidate,
+  type CandidateStats, type QueueItem, type Tier,
 } from '@/lib/autopilot';
+import { safeHref } from '@/lib/safe-url';
 
 const TIER_ORDER: Tier[] = ['UNKNOWN', 'KNOWN', 'STRONG', 'ELITE', 'FAANG'];
 
@@ -33,6 +35,7 @@ export default function AutopilotPage() {
 
   const [status, setStatus] = useState<AutopilotStatus | null>(null);
   const [queue, setQueue] = useState<QueueItem[]>([]);
+  const [callbacks, setCallbacks] = useState<CallbackStats | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -58,6 +61,7 @@ export default function AutopilotPage() {
     } catch {
       /* the queue is secondary; a failure here must not blank the page */
     }
+    autopilot.callbacks().then(setCallbacks).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -318,9 +322,66 @@ export default function AutopilotPage() {
           {queue.map((item) => (
             <QueueRow key={item.job_id} item={item} onDecide={decide} />
           ))}
+          {callbacks && <CallbackCard stats={callbacks} />}
         </div>
       )}
     </div>
+  );
+}
+
+const CALLBACK_GROUPS: { key: keyof CallbackStats['by']; label: string }[] = [
+  { key: 'variant', label: 'Resume' },
+  { key: 'llm_used', label: 'Wording' },
+  { key: 'first_glance', label: 'First-glance match' },
+];
+
+function rateText(b: CallbackBucket): string {
+  if (b.rate === null) return '—';
+  return `${b.rate}%${b.enough_data ? '' : ' *'}`;
+}
+
+/** Whether tailoring pays, measured by callbacks rather than keyword scores. */
+function CallbackCard({ stats }: { stats: CallbackStats }) {
+  const { overall, rules } = stats;
+  return (
+    <Card>
+      <CardTitle>Callback rate</CardTitle>
+      <CardDescription>
+        A callback is a job marked {rules.callback.join(' or ')}. No reply after{' '}
+        {rules.no_reply_after_days} days counts as a no; younger applications are pending and
+        left out. * fewer than {rules.min_sample} settled — too few to trust.
+      </CardDescription>
+      <div className="mt-3 flex flex-wrap gap-2 text-sm">
+        <span className="rounded-lg bg-[var(--surface-2)] px-2.5 py-1 text-[var(--text-secondary)]">
+          <b className="font-semibold text-[var(--text-primary)]">{rateText(overall)}</b> overall
+        </span>
+        <Stat label="callbacks" value={overall.callback} />
+        <Stat label="settled" value={overall.settled} />
+        <Stat label="pending" value={overall.pending} />
+      </div>
+      {overall.sent > 0 && (
+        <div className="mt-4 space-y-3 text-sm">
+          {CALLBACK_GROUPS.map(({ key, label }) => (
+            <div key={key}>
+              <p className="mb-1 text-xs uppercase tracking-wide text-[var(--text-muted)]">{label}</p>
+              <div className="flex flex-wrap gap-2">
+                {Object.entries(stats.by[key]).map(([name, b]) => (
+                  <span
+                    key={name}
+                    className="rounded-lg border border-[var(--border)] px-2.5 py-1 text-[var(--text-secondary)]"
+                  >
+                    {name}: <b className="text-[var(--text-primary)]">{rateText(b)}</b>{' '}
+                    <span className="text-[var(--text-muted)]">
+                      ({b.callback}/{b.settled})
+                    </span>
+                  </span>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
   );
 }
 
@@ -390,7 +451,7 @@ function CandidateRow({
         )}
       </div>
       <a
-        href={candidate.apply_url || candidate.url}
+        href={safeHref(candidate.apply_url || candidate.url)}
         target="_blank"
         rel="noreferrer"
         className="mt-0.5 shrink-0 rounded-lg p-1.5 text-[var(--text-muted)] hover:bg-[var(--surface-2)] hover:text-[var(--text-primary)]"
@@ -439,7 +500,7 @@ function QueueRow({
           </button>
         )}
         <a
-          href={item.url}
+          href={safeHref(item.url)}
           target="_blank"
           rel="noreferrer"
           className="rounded-lg p-1.5 text-[var(--text-muted)] hover:bg-[var(--surface-2)]"

@@ -106,7 +106,7 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         job_ids: jobIds || null,
-        auto_submit: true,
+        auto_submit: false, // ignored server-side: TempoApply never submits
         headless: false,
       }),
     }),

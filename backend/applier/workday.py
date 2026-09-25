@@ -19,9 +19,11 @@ from backend.applier.filler import (
     captcha_present,
     click_named_button,
     click_next,
+    control_text,
     dismiss_overlays,
     fill_form,
     finish_application,
+    reads_as_submit,
     screenshot_failure,
     upload_resume,
     wait_settled,
@@ -128,6 +130,11 @@ async def _click_next(page: Page) -> bool:
                 return False
         except Exception:
             pass
+        # A tenant can render the review step's "Submit" under the next-button
+        # automation id. Read the label, never trust the id alone.
+        if reads_as_submit(await control_text(wd.first)):
+            logger.info("Workday footer button reads as Submit — stopping for review")
+            return False
         await wd.first.click(timeout=3000)
         return True
     return await click_next(page)
@@ -484,11 +491,29 @@ async def _typeahead(page: Page, automation_id: str, value: str) -> bool:
             '[data-automation-id="promptLeafNode"], [data-automation-id="promptOption"], [role="option"]'
         )
         if await opt.count():
-            match = opt.filter(has_text=value)
-            await (match.first if await match.count() else opt.first).click()
+            # Only an option the shared matcher accepts. This used to click the
+            # first row whenever none matched — an arbitrary country or source
+            # written into the form — and `has_text` is a bare substring, so
+            # "India" also matched "British Indian Ocean Territory".
+            from backend.applier.fields import pick_option
+
+            rows = []
+            for i in range(min(await opt.count(), 60)):
+                item = opt.nth(i)
+                try:
+                    if await item.is_visible():
+                        rows.append((item, ((await item.inner_text()) or "").strip()))
+                except Exception:
+                    continue
+            choice = pick_option([text for _, text in rows], value)
+            if not choice:
+                logger.debug(f"Workday typeahead {automation_id}: no option matches {value!r}")
+                return False
+            await next(item for item, text in rows if text == choice).click()
             return True
-        await loc.first.press("Enter")
-        return True
+        # No rows appeared. Enter would commit whatever Workday's search lands
+        # on, unseen; leave the field for the human instead of guessing.
+        return False
     except Exception as exc:
         logger.debug(f"Workday typeahead {automation_id}: {exc}")
         return False
@@ -595,30 +620,25 @@ async def _pick_option(page: Page, desired: str) -> bool:
         count = min(await opt.count(), 40)
     except Exception:
         return False
-    want = (desired or "").strip().lower()
-    first_visible = None
+    # The shared matcher, not substrings: "no" is inside "now", so a "No" to
+    # "Will you now or in the future require sponsorship?" picked "Yes, I will
+    # now…". And no match means no click — this used to click the first of up
+    # to four options whatever it said.
+    from backend.applier.fields import pick_option
+
+    rows = []
     for i in range(count):
         item = opt.nth(i)
         try:
-            if not await item.is_visible():
-                continue
+            if await item.is_visible():
+                rows.append((item, ((await item.inner_text()) or "").strip()))
         except Exception:
             continue
-        if first_visible is None:
-            first_visible = item
-        text = ((await item.inner_text()) or "").strip().lower()
-        if want and (want == text or want in text or text in want):
-            await item.click(timeout=2500)
-            return True
-        if want in {"yes", "no"} and text.startswith(want):
-            await item.click(timeout=2500)
-            return True
-    if first_visible is not None and want in {"yes", "no"}:
+    choice = pick_option([text for _, text in rows], desired or "") if rows else None
+    if not choice:
         return False
-    if first_visible is not None and count <= 4:
-        await first_visible.click(timeout=2500)
-        return True
-    return False
+    await next(item for item, text in rows if text == choice).click(timeout=2500)
+    return True
 
 
 async def _fill_form_blocks(page: Page, profile: ApplicantProfile, job_title: str, company: str) -> int:

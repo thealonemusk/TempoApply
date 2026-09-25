@@ -13,6 +13,28 @@ from backend.config import settings
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 PROFILE_PATH = PROJECT_ROOT / "config" / "applicant_profile.json"
 RESUMES_DIR = PROJECT_ROOT / "resumes"
+RESUME_SUFFIXES = {".pdf", ".doc", ".docx"}
+
+
+def safe_resume_path(value: str) -> Optional[Path]:
+    """
+    `value` as a resume file inside `resumes/`, or None.
+
+    The resume path is sent to employers and served by `/api/autofill/resume`,
+    so it must not be able to name any other file: set to `config/.env`, that
+    endpoint returned the API keys and passwords as "the resume".
+    """
+    if not value:
+        return None
+    path = Path(value)
+    if not path.is_absolute():
+        path = PROJECT_ROOT / path
+    try:
+        path = path.resolve()
+        path.relative_to(RESUMES_DIR.resolve())
+    except (OSError, ValueError):
+        return None
+    return path if path.suffix.lower() in RESUME_SUFFIXES else None
 
 
 @dataclass
@@ -78,7 +100,7 @@ class ApplicantProfile:
     )
     custom_answers: Dict[str, str] = field(default_factory=dict)
     resume_path: str = "resumes/resume.pdf"
-    auto_submit: bool = True
+    auto_submit: bool = False  # ignored: TempoApply never submits
 
     def split_name(self) -> None:
         if self.first_name and self.last_name:
@@ -134,10 +156,8 @@ class ApplicantProfile:
             return self.cover_letter_template
 
     def resume_file(self) -> Optional[Path]:
-        path = Path(self.resume_path)
-        if not path.is_absolute():
-            path = PROJECT_ROOT / path
-        if path.is_file():
+        path = safe_resume_path(self.resume_path)
+        if path is not None and path.is_file():
             return path
         for candidate in sorted(RESUMES_DIR.glob("*")):
             if candidate.suffix.lower() in {".pdf", ".doc", ".docx"}:
@@ -267,6 +287,10 @@ def load_profile() -> ApplicantProfile:
 def save_profile(updates: Dict[str, Any]) -> ApplicantProfile:
     current = load_profile().to_dict()
     for key, value in updates.items():
+        if key == "resume_path" and value and safe_resume_path(str(value)) is None:
+            raise ValueError("resume_path must be a .pdf, .doc or .docx inside resumes/")
+        if key == "auto_submit":
+            value = False                 # TempoApply never submits
         if key in current:
             current[key] = value
     PROFILE_PATH.parent.mkdir(parents=True, exist_ok=True)

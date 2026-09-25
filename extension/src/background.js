@@ -43,21 +43,24 @@ async function call(path, options) {
   }
 }
 
-// Cache the resume — it is the same bytes on every form in a session. The TTL
-// is what makes swapping in a new resume take effect on its own, without
-// reloading the extension.
+// Cache the resume per page. Each job may have its own tailored PDF, so one
+// cached copy would attach the first job's resume to every later form. The
+// frame URL and the tab URL both go to the backend: an embedded Greenhouse
+// form lives in an iframe whose URL is not the job's. The TTL is what makes
+// swapping in a new resume take effect on its own, without reloading.
 const RESUME_TTL_MS = 5 * 60 * 1000;
-let resumeCache = null;
-let resumeCachedAt = 0;
+let resumeCache = new Map();
 
-async function getResume() {
-  if (resumeCache && Date.now() - resumeCachedAt < RESUME_TTL_MS) {
-    return { ok: true, data: resumeCache };
+async function getResume(url, tabUrl) {
+  const key = `${url || ""}|${tabUrl || ""}`;
+  const hit = resumeCache.get(key);
+  if (hit && Date.now() - hit.at < RESUME_TTL_MS) {
+    return { ok: true, data: hit.data };
   }
-  const result = await call("/api/autofill/resume");
+  const query = new URLSearchParams({ url: url || "", tab_url: tabUrl || "" });
+  const result = await call(`/api/autofill/resume?${query}`);
   if (result.ok) {
-    resumeCache = result.data;
-    resumeCachedAt = Date.now();
+    resumeCache.set(key, { data: result.data, at: Date.now() });
   }
   return result;
 }
@@ -79,7 +82,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return;
 
       case "resume":
-        sendResponse(await getResume());
+        sendResponse(await getResume(message.url, sender.tab && sender.tab.url));
         return;
 
       case "track":
@@ -135,7 +138,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
       case "setApiBase":
         await chrome.storage.local.set({ apiBase: message.value });
-        resumeCache = null;
+        resumeCache.clear();
         sendResponse({ ok: true });
         return;
 
@@ -144,7 +147,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return;
 
       case "clearResumeCache":
-        resumeCache = null;
+        resumeCache.clear();
         sendResponse({ ok: true });
         return;
 

@@ -201,7 +201,9 @@ export default function JobsPage() {
     }
     try {
       setApplying(true);
-      await api.startApply();
+      // The ids counted in the dialog above, so the run is exactly what was
+      // confirmed. With none sent, the server picks its own set.
+      await api.startApply(eligible.map((j) => j.id));
     } catch (err) {
       setApplying(false);
       alert(err instanceof Error ? err.message : 'Could not start apply. Check Settings → Applicant profile.');

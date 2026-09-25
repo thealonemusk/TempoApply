@@ -1,5 +1,6 @@
 from sqlalchemy import create_engine, Column, String, Integer, Float, Text, DateTime, ForeignKey, Boolean, text
-from sqlalchemy.orm import DeclarativeBase, relationship, sessionmaker
+from sqlalchemy import event, inspect
+from sqlalchemy.orm import DeclarativeBase, Session, relationship, sessionmaker
 from sqlalchemy.sql import func
 from datetime import datetime
 import uuid
@@ -66,6 +67,65 @@ class Application(Base):
     created_at = Column(DateTime, default=func.now())
 
     job = relationship("Job", back_populates="application")
+
+
+class ResumeSend(Base):
+    """
+    Which resume went to which job — the other half of a callback rate.
+
+    One row per job, overwritten by a later fill, because the resume that
+    matters is the last one attached before the user submitted.
+
+    The outcome is copied here from `jobs.status` on every change (see
+    `_snapshot_outcomes`), not only read from the job, because the dashboard's
+    Clear deletes rejected jobs. Reading the outcome from `jobs` alone would
+    quietly drop every rejection and inflate the callback rate. For the same
+    reason `job_id` carries no foreign key: this row must outlive its job.
+    """
+
+    __tablename__ = "resume_sends"
+
+    job_id = Column(String, primary_key=True)
+    company = Column(String, default="")
+    title = Column(String, default="")
+    status = Column(String, default="")           # copy of jobs.status
+    applied_at = Column(DateTime, nullable=True)  # copy of jobs.applied_at
+    # Set by sends.record only. No onupdate: copying a status change onto this
+    # row would otherwise move sent_at, and with it the no-reply window.
+    sent_at = Column(DateTime, default=func.now())
+    channel = Column(String, default="")          # headless | extension
+    variant = Column(String, default="default")   # tailored | default
+    sha256 = Column(String, default="")
+    path = Column(String, default="")
+    llm_used = Column(Boolean, default=False)
+    coverage = Column(Float, nullable=True)       # required-term coverage, whole PDF
+    first_glance = Column(Float, nullable=True)   # same, on what is read first
+    reordered = Column(Integer, default=0)        # entries whose lead bullet changed
+    reworded = Column(Integer, default=0)         # bullets the model rewrote
+
+
+@event.listens_for(Session, "before_flush")
+def _snapshot_outcomes(session, flush_context, instances) -> None:
+    """
+    Copy a job's status onto its resume send whenever it changes, through any
+    code path that goes via the ORM — the dashboard PATCH, the extension's
+    "Mark applied", the review queue, the apply engine.
+
+    Only changed jobs: a new one cannot have a send yet (ids are fresh
+    uuid4s), and a scan inserts hundreds of them per flush.
+    """
+    for obj in list(session.dirty):
+        if not isinstance(obj, Job):
+            continue
+        state = inspect(obj)
+        if not (state.attrs.status.history.has_changes()
+                or state.attrs.applied_at.history.has_changes()):
+            continue
+        with session.no_autoflush:
+            send = session.get(ResumeSend, obj.id)
+        if send is not None:
+            send.status = obj.status
+            send.applied_at = obj.applied_at
 
 
 class BaseResume(Base):
@@ -146,6 +206,18 @@ def _migrate_db():
         for name, ddl in extras.items():
             if name not in col_names:
                 conn.execute(text(f"ALTER TABLE jobs ADD COLUMN {name} {ddl}"))
+                conn.commit()
+        # create_all() never alters a table that already exists.
+        send_cols = {row[1] for row in conn.execute(text("PRAGMA table_info(resume_sends)"))}
+        send_extras = {
+            "company": "VARCHAR DEFAULT ''",
+            "title": "VARCHAR DEFAULT ''",
+            "status": "VARCHAR DEFAULT ''",
+            "applied_at": "DATETIME",
+        }
+        for name, ddl in send_extras.items():
+            if send_cols and name not in send_cols:
+                conn.execute(text(f"ALTER TABLE resume_sends ADD COLUMN {name} {ddl}"))
                 conn.commit()
     _release_cleared_jobs()
 

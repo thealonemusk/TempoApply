@@ -177,12 +177,14 @@ def rank_slots(
     slots: Iterable,
     required: Sequence[str],
     nice_to_have: Sequence[str] = (),
+    reward_numbers: bool = True,
 ) -> Dict[str, float]:
     """
     Score each slot by how much JD-relevant evidence it carries.
 
-    Drives two things: the order bullets are offered to the model, and which
-    bullet is sacrificed first when the resume overflows one page.
+    Drives which bullet is sacrificed first when the resume overflows one page,
+    and — with `reward_numbers=False`, so only the job's own terms count — the
+    order bullets are laid out in.
     """
     scores: Dict[str, float] = {}
     for slot in slots:
@@ -190,7 +192,7 @@ def rank_slots(
         hits = sum(3.0 for term in required if contains(blob, normalise(term)))
         hits += sum(1.0 for term in nice_to_have if contains(blob, normalise(term)))
         # A bullet carrying a measured outcome is worth keeping over one that does not.
-        if re.search(r"\d+\s*(%|x\b|million|m\b|k\b|ms\b|s\b|gb|mb)", blob):
+        if reward_numbers and re.search(r"\d+\s*(%|x\b|million|m\b|k\b|ms\b|s\b|gb|mb)", blob):
             hits += 1.5
         if slot.kind == "summary":
             hits += 5.0          # never the first thing dropped

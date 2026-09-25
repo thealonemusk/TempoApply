@@ -219,6 +219,25 @@
     return "";
   }
 
+  // Which radio group a control belongs to, for radios with no `name`. The
+  // backend groups radios by name, and a nameless one used to become a group
+  // of one — answered "yes" whatever the question wanted, because a list of
+  // one option has only one pick. The shared question container is the group.
+  const GROUP_IDS = new WeakMap();
+  let groupSeq = 0;
+
+  function groupKeyFor(el) {
+    const container =
+      el.closest('fieldset, [role="radiogroup"], [role="group"]') ||
+      el.closest(`${WORKDAY_FORM_FIELD}, .application-question, [class*="question"], .field, .form-field`);
+    if (!container) return "";
+    if (!GROUP_IDS.has(container)) {
+      groupSeq += 1;
+      GROUP_IDS.set(container, `g${groupSeq}`);
+    }
+    return GROUP_IDS.get(container);
+  }
+
   /** This radio's or checkbox's own option text. */
   function optionLabelFor(el) {
     if (el.labels && el.labels.length) {
@@ -372,6 +391,7 @@
       label: isChoice ? groupLabelFor(el) || optionLabelFor(el) : labelFor(el),
       group_label: isChoice ? groupLabelFor(el) : "",
       option_label: isChoice ? optionLabelFor(el) : "",
+      group_key: type === "radio" ? groupKeyFor(el) : "",
       value: isChoice ? "" : clean(el.value || ""),
       checked: isChoice ? !!el.checked : false,
       required: !!el.required || el.getAttribute("aria-required") === "true",
@@ -399,6 +419,7 @@
       label: labelFor(el),
       group_label: "",
       option_label: "",
+      group_key: "",
       value: widgetValue(el),
       checked: false,
       required: el.getAttribute("aria-required") === "true",
@@ -415,11 +436,13 @@
    * filler never has to re-find a node by selector (Workday ids repeat).
    */
   TA.scrape = function scrape(root) {
-    // `root` scopes the scan to one part of the page, so the user can fill a
-    // single section of a long form instead of all of it. Entry numbering is
-    // still derived inside that scope, which is what makes "fill just this
-    // employer block" answer for the entry the user actually pointed at.
-    const scope = root && root.querySelectorAll ? root : document;
+    // `root` scopes the result to one part of the page, so the user can fill
+    // a single section of a long form instead of all of it. The scan itself
+    // is still of the whole page, and entries are numbered there: numbering
+    // inside the picked block restarted at 1, so employer 2's block was
+    // tagged experience 1 and overwritten with employer 1's answers.
+    const scoped = !!(root && root.querySelectorAll) && root !== document;
+    const scope = document;
     const seen = new Set();
     const fields = [];
     const elements = new Map();
@@ -456,10 +479,31 @@
     }
 
     // Recover repeating-entry membership for anything the container ids missed.
+    // Page-wide, before any scoping, so the second "Company" on the page is
+    // employer 2 whichever block the user pointed at.
     inferSectionsByOrder(fields);
 
-    return { fields, elements };
+    if (!scoped) return { fields, elements };
+    const kept = [];
+    const keptElements = new Map();
+    for (const field of fields) {
+      const el = elements.get(field.idx);
+      if (!insideRoot(root, el)) continue;
+      kept.push(field);
+      keptElements.set(field.idx, el);
+    }
+    return { fields: kept, elements: keptElements };
   };
+
+  /** Is `el` inside `root`, looking through open shadow roots too? */
+  function insideRoot(root, el) {
+    let node = el;
+    while (node) {
+      if (node === root) return true;
+      node = node.parentNode || node.host || null;
+    }
+    return false;
+  }
 
   /**
    * What kind of page is this, before we try to fill anything?

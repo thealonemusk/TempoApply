@@ -85,7 +85,26 @@ export interface QueueItem {
   has_tailored_resume: boolean;
 }
 
+export interface CallbackBucket {
+  callback: number;
+  rejected: number;
+  no_reply: number;
+  pending: number;
+  sent: number;
+  settled: number;
+  rate: number | null;
+  enough_data: boolean;
+}
+
+export interface CallbackStats {
+  overall: CallbackBucket;
+  by: Record<'variant' | 'llm_used' | 'first_glance', Record<string, CallbackBucket>>;
+  rules: { callback: string[]; no_reply_after_days: number; min_sample: number };
+}
+
 export const autopilot = {
+  callbacks: () => request<CallbackStats>('/api/autopilot/callbacks'),
+
   candidates: (limit = 30, minTier = 'UNKNOWN', autoOnly = false) =>
     request<CandidateResponse>(
       `/api/autopilot/candidates?limit=${limit}&min_tier=${minTier}&auto_only=${autoOnly}`,

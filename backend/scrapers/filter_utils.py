@@ -6,8 +6,12 @@ Hard limits: <= 2 years experience, no frontend-only roles, India-only locations
 import re
 from typing import Optional, Tuple
 
+# Matched as whole words (see `_title_has_keyword`), never as substrings:
+# "vp" rejected "Software Engineer - VPN", "head" rejected "Headless Commerce"
+# and "lead" rejected "Leadership Tools". "leader" is listed on its own because
+# the bounded "lead" no longer reaches "Team Leader".
 EXCLUDED_TITLE_KEYWORDS = [
-    "senior", "sr.", "sr ", "lead", "staff", "principal", "manager",
+    "senior", "sr.", "sr", "lead", "leader", "staff", "principal", "manager",
     "director", "head", "architect", "sde 2", "sde-2", "sde2", "sde 3", "sde-3",
     "sde3", "sde ii", "sde-ii", "sde iii", "sde-iii", "level 2", "level 3", "level 4",
     "l2", "l3", "l4", "l5",
@@ -19,7 +23,10 @@ EXCLUDED_TITLE_KEYWORDS = [
 EXCLUDED_TITLE_REGEXES = [
     r'\b(?:ii|iii|iv|v)(?:new)?\b',
     r'\bl[2-7]\b',
-    r'(?<!\d)[-_\s](?:2|3|4|5)(?!(?:\s*\+|\s*(?:years?|yrs?|yr|y)\b|\s+to\s+\d))',
+    # A standalone level number: "Engineer 2", "SDE - 3". The digit must end the
+    # token — without `(?![\d.a-z])` this read " 2026" in "2026 New Grad", "5G"
+    # and "3D" as levels and rejected exactly the entry-level roles we want.
+    r'(?<!\d)[-_\s](?:2|3|4|5)(?![\d.a-z])(?!(?:\s*\+|\s*(?:years?|yrs?|yr|y)\b|\s+to\s+\d))',
 ]
 
 MAX_JD_EXPERIENCE_YEARS = 2.0
@@ -73,9 +80,11 @@ JD_HISTORY_BEFORE_RE = re.compile(
 MIN_JD_CHARS = 80
 
 INDIA_PLATFORMS = {"naukri", "instahyre", "indeed"}
+# "ncr" is not here: bare, it is also a company ("Join NCR Voyix"), which let
+# an Atlanta posting through. It is matched by NCR_RE instead.
 INDIA_MARKERS = (
     "india", "bharat", "bengaluru", "bangalore", "hyderabad", "pune", "mumbai",
-    "gurugram", "gurgaon", "noida", "delhi", "new delhi", "ncr", "chennai",
+    "gurugram", "gurgaon", "noida", "delhi", "new delhi", "chennai",
     "kolkata", "ahmedabad", "jaipur", "chandigarh", "kochi", "coimbatore",
     "indore", "lucknow", "mysore", "mysuru", "thane", "navi mumbai",
     "telangana", "karnataka", "maharashtra", "haryana", "uttar pradesh",
@@ -94,6 +103,25 @@ ABROAD_MARKERS = (
     "ireland", "dublin", "poland", "warsaw", "remote - us", "remote, us",
     "remote (us)", "us remote",
 )
+# Too generic to place a job on their own when read out of JD prose: "India"
+# in "our teams span the US, Europe and India" says where the company is, not
+# where the role is. A JD has to name an Indian city (or use a location cue,
+# below) before it counts.
+JD_GENERIC_INDIA = {"india", "bharat", "pan india"}
+# "Delhi NCR", "NCR, India", "NCR Region", or "NCR" as the whole location.
+NCR_RE = re.compile(
+    r'(?<![a-z0-9])(?:delhi[\s\-/]*ncr|ncr\s*(?:[,(\-/]\s*)?(?:india|region|delhi)|^\s*ncr\s*$)(?![a-z0-9])'
+)
+# Phrases that say where the role itself sits. Only what follows one of these,
+# within a few words, is read as the job's location from the JD.
+JD_LOCATION_CUE_RE = re.compile(
+    r'(?:\bbased\s+(?:in|out\s+of|at)|\blocated\s+(?:in|at)|\blocations?\s*[:\-–]|'
+    r'\bjob\s+location\b|\bwork\s+location\b|\boffice\s+in|\bwork(?:ing)?\s+from|'
+    r'\bposition\s+is\s+(?:in|at)|\brole\s+is\s+(?:in|at)|\bon-?site\s+(?:in|at)|'
+    r'\bhybrid\s+(?:in|at|from)|\brelocate\s+to)',
+    re.IGNORECASE,
+)
+JD_CUE_WINDOW = 60
 US_STATE_RE = re.compile(
     r',\s*(AL|AK|AZ|AR|CA|CO|CT|DC|DE|FL|GA|HI|IA|ID|IL|KS|KY|LA|MA|MD|ME|'
     r'MI|MN|MO|MS|MT|NC|ND|NE|NH|NJ|NM|NV|NY|OH|OK|OR|PA|RI|SC|SD|TN|TX|'
@@ -132,6 +160,13 @@ FRONTEND_KEEP = (
 )
 
 
+def _title_has_keyword(title_lower: str, keyword: str) -> bool:
+    """Whole-word match; a keyword ending in "." ("sr.") needs no right edge."""
+    left = r'(?<![a-z0-9])'
+    right = '' if keyword.endswith('.') else r'(?![a-z0-9])'
+    return bool(re.search(left + re.escape(keyword) + right, title_lower))
+
+
 def _experience_exceeds_cap(min_y: float, max_y: float, cap: float = MAX_JD_EXPERIENCE_YEARS) -> bool:
     return min_y > cap or max_y > cap
 
@@ -149,8 +184,10 @@ def _ranges_from_text(text: str) -> list:
     for match in RANGE_YEARS_RE.finditer(text):
         found.append(_pair(float(match.group(1)), float(match.group(2))))
     for match in PLUS_YEARS_RE.finditer(text):
+        # "N+ years" states a minimum, nothing more. It used to be read as
+        # N..N+3, so "1+ years" parsed as up to 4 and failed a cap of 2.
         min_y = float(match.group(1))
-        found.append((min_y, min_y + 3.0))
+        found.append((min_y, min_y))
     for match in MIN_YEARS_RE.finditer(text):
         min_y = float(match.group(1))
         phrase = match.group(0).lower()
@@ -182,9 +219,8 @@ def _jd_experience_ranges(jd_text: str) -> list:
         if JD_HISTORY_BEFORE_RE.search(before):
             continue
         min_y = float(match.group(1))
+        # A bare "N+" is a minimum: judged by N alone (see `_ranges_from_text`).
         max_y = float(match.group(2)) if match.group(2) else min_y
-        if "+" in match.group(0) and not match.group(2):
-            max_y = min_y + 3.0
         if min_y > 15:
             continue
         found.append(_pair(min_y, max_y))
@@ -196,16 +232,19 @@ def is_job_experience_valid(
     max_years: float = MAX_JD_EXPERIENCE_YEARS,
     require_jd: bool = True,
 ) -> Tuple[bool, str]:
-    cap = MAX_JD_EXPERIENCE_YEARS
-    title = job_data.get("title", "").strip()
+    # The caller's cap is honoured: every caller passes settings.experience_years
+    # (EXPERIENCE_YEARS, 2 today, shown as the "hard limit" at startup), so the
+    # effective cap is unchanged. This used to ignore the argument outright.
+    cap = MAX_JD_EXPERIENCE_YEARS if max_years is None else float(max_years)
+    title =(job_data.get("title") or "").strip()
     title_lower = title.lower()
-    jd_text = job_data.get("jd_text", "").strip()
+    jd_text = (job_data.get("jd_text") or "").strip()
 
     if title and INTERN_PATTERN.search(title):
         return False, f"Title mentions intern/internship: '{title}'"
 
     for keyword in EXCLUDED_TITLE_KEYWORDS:
-        if keyword in title_lower:
+        if _title_has_keyword(title_lower, keyword):
             return False, f"Title contains senior/excluded keyword: '{keyword}' in '{title}'"
 
     for pattern in EXCLUDED_TITLE_REGEXES:
@@ -268,12 +307,29 @@ def _contains_marker(blob: str, marker: str) -> bool:
     return bool(re.search(rf'(?<![a-z0-9]){re.escape(marker)}(?![a-z0-9])', blob))
 
 
+def _india_in(blob: str, markers=INDIA_MARKERS) -> bool:
+    return any(_contains_marker(blob, m) for m in markers) or bool(NCR_RE.search(blob))
+
+
+def _abroad_in(blob: str) -> bool:
+    return any(_contains_marker(blob, m) for m in ABROAD_MARKERS)
+
+
+def _jd_cued_places(jd: str) -> Tuple[bool, bool]:
+    """(India, abroad) as named right after a location cue in the JD."""
+    india = abroad = False
+    for cue in JD_LOCATION_CUE_RE.finditer(jd):
+        window = jd[cue.end():cue.end() + JD_CUE_WINDOW]
+        india = india or _india_in(window)
+        abroad = abroad or _abroad_in(window) or bool(US_STATE_RE.search(window))
+    return india, abroad
+
+
 def is_location_allowed(job_data: dict) -> Tuple[bool, str]:
     location = (job_data.get("location") or "").strip()
     title = job_data.get("title") or ""
-    jd = (job_data.get("jd_text") or "")[:1200]
+    jd = (job_data.get("jd_text") or "")[:1200].lower()
     platform = (job_data.get("platform") or "").lower()
-    blob = f"{location} {title} {jd}".lower()
 
     # Cities the user will not relocate to. Matched on the location and title
     # only, never the JD — a Bengaluru posting that merely mentions a Chennai
@@ -283,13 +339,32 @@ def is_location_allowed(job_data: dict) -> Tuple[bool, str]:
         if _contains_marker(where, city):
             return False, f"Excluded city: '{location or title}'"
 
-    has_india = any(_contains_marker(blob, m) for m in INDIA_MARKERS)
-    has_abroad = any(_contains_marker(blob, m) for m in ABROAD_MARKERS) or bool(US_STATE_RE.search(location))
-
-    if has_abroad and not has_india:
-        return False, f"Non-India location: '{location or title}'"
-    if has_india:
+    # The location field (and title) decide first. The JD used to be pooled in
+    # with them and an India hit anywhere won, so "Seattle, WA" whose
+    # boilerplate said "our teams span the US, Europe and India" came through
+    # as an India job.
+    loc_india = _india_in(where) or bool(NCR_RE.search(location.lower()))
+    loc_abroad = _abroad_in(where) or bool(US_STATE_RE.search(location))
+    if loc_india:
+        # Includes multi-city listings such as "Bengaluru; Seattle, WA".
         return True, "India location"
+    if loc_abroad:
+        return False, f"Non-India location: '{location or title}'"
+
+    # Location empty or uninformative ("Remote", "Multiple locations"): only
+    # now does the JD get a say, and only through India-specific phrasing — a
+    # location cue ("based in Pune"), or an Indian city with no foreign one.
+    cue_india, cue_abroad = _jd_cued_places(jd)
+    if cue_india:
+        return True, "India location (from JD)"
+    if cue_abroad:
+        return False, f"Non-India location (from JD): '{location or title}'"
+    jd_city = _india_in(jd, tuple(m for m in INDIA_MARKERS if m not in JD_GENERIC_INDIA))
+    jd_abroad = _abroad_in(jd)
+    if jd_city and not jd_abroad:
+        return True, "India location (from JD)"
+    if jd_abroad and not jd_city:
+        return False, f"Non-India location: '{location or title}'"
     if platform in INDIA_PLATFORMS:
         return True, "India job board"
     loc = location.lower()
