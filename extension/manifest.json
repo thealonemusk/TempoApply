@@ -27,8 +27,21 @@
       "all_frames": true,
       "run_at": "document_idle",
       "js": ["src/scrape.js", "src/fill.js", "src/widget.js", "src/content.js"]
+    },
+    {
+      "_comment": "Page-world helper: calls Workday's React onKeyDown, which the isolated content script cannot see. See src/react-bridge.js.",
+      "matches": ["<all_urls>"],
+      "exclude_matches": [
+        "*://*.linkedin.com/*",
+        "*://linkedin.com/*"
+      ],
+      "all_frames": true,
+      "run_at": "document_idle",
+      "world": "MAIN",
+      "js": ["src/react-bridge.js"]
     }
   ],
+  "minimum_chrome_version": "111",
   "action": {
     "default_popup": "popup/popup.html",
     "default_title": "TempoApply Autofill",

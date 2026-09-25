@@ -183,6 +183,7 @@
         <div class="step" data-step hidden></div>
         <button class="btn primary" data-fill>Autofill</button>
         <button class="btn ghost" data-fill-section title="Fill only one part of this form">Fill a section</button>
+        <button class="btn ghost" data-tailor title="Tailor your resume to this job's description. Select the description first if it isn't found.">Tailor resume</button>
         <div class="actions" data-actions-gate hidden></div>
         <div data-results hidden>
           <div class="stats">
@@ -242,6 +243,7 @@
       dot: q("[data-dot]"),
       fill: q("[data-fill]"),
       fillSection: q("[data-fill-section]"),
+      tailor: q("[data-tailor]"),
       gate: q("[data-actions-gate]"),
       step: q("[data-step]"),
       results: q("[data-results]"),
@@ -314,6 +316,9 @@
       if (handlers.onFillSection) {
         el.fillSection.addEventListener("click", handlers.onFillSection);
       }
+      if (handlers.onTailor) {
+        el.tailor.addEventListener("click", handlers.onTailor);
+      }
       el.refill.addEventListener("click", handlers.onRefill);
       el.applied.addEventListener("click", handlers.onApplied);
       this.onTodoClick = handlers.onTodoClick;
@@ -325,6 +330,13 @@
     escape: (text) => escapeHtml(text == null ? "" : text),
 
     isMounted: () => !!host && host.isConnected,
+
+    /** Disable Tailor while a run is in flight, and relabel it. */
+    setTailoring(on, label) {
+      if (!host || !el.tailor) return;
+      el.tailor.disabled = !!on;
+      el.tailor.textContent = label || (on ? "Tailoring…" : "Tailor resume");
+    },
 
     setBackend(up, detail) {
       if (!host) return;

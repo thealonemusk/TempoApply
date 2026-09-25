@@ -265,12 +265,27 @@
   const WD_OPTION = '[data-automation-id="promptOption"], [data-automation-id="promptLeafNode"]';
   const WD_POPUP = '[data-automation-widget="wd-popup"]';
 
-  /** React's props for a node, which is where the live handlers live. */
-  function reactProps(el) {
-    for (const key in el) {
-      if (key.startsWith("__reactProps")) return el[key];
+  /**
+   * Call React's handler on `el` through react-bridge.js, which runs in the
+   * page's world. Reading `__reactProps$…` from here found nothing: a content
+   * script is in an isolated world and never sees the page's JS properties,
+   * so on a live tenant every prompt looked prop-less and Skills fell back to
+   * typing. Returns "ok", "noprops", or "nobridge" when nothing answered.
+   */
+  let reactSeq = 0;
+  function viaBridge(el, msg) {
+    const token = `ta${Date.now().toString(36)}${(reactSeq += 1)}`;
+    el.setAttribute("data-tempoapply-react", token);
+    el.removeAttribute("data-tempoapply-react-result");
+    try {
+      document.dispatchEvent(
+        new CustomEvent("tempoapply:react", { detail: JSON.stringify({ token, ...msg }) })
+      );
+      return el.getAttribute("data-tempoapply-react-result") || "nobridge";
+    } finally {
+      el.removeAttribute("data-tempoapply-react");
+      el.removeAttribute("data-tempoapply-react-result");
     }
-    return null;
   }
 
   async function waitFor(test, timeoutMs) {
@@ -382,8 +397,7 @@
     if (!container) return null;
     const input = container.querySelector("input");
     if (!input) return null;
-    const props = reactProps(input);
-    if (!props || typeof props.onKeyDown !== "function") return null;
+    if (viaBridge(input, { op: "probe" }) !== "ok") return null;
 
     let picked = 0;
     for (const value of values) {
@@ -396,17 +410,8 @@
       const landed = (text) =>
         workdayChips(container) > before ||
         (!containsWord(shownBefore, norm(text)) && containsWord(shownIn(container), norm(text)));
-      try {
-        input.focus({ preventScroll: true });
-        props.onKeyDown({
-          key: "Tab",
-          target: { value },
-          preventDefault() {},
-          stopPropagation() {},
-        });
-      } catch (e) {
-        continue;
-      }
+      input.focus({ preventScroll: true });
+      if (viaBridge(input, { op: "keydown", key: "Tab", value }) !== "ok") continue;
 
       // The Tab keydown runs the search. On most values it also commits, but
       // where the taxonomy has more than one hit it just leaves the menu open
